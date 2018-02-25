@@ -15,6 +15,19 @@
 
 #define BUFSIZE 1024
 
+typedef struct content *content_t;
+struct content {
+  char *file;
+  char *host;
+  char *port;
+  char *brate;
+};
+
+/* Global - holds the files and paths */
+content_t dictionary[BUFSIZE];
+/* Global - next free index in dictionary */
+int d_index;
+
 /*
  * error - wrapper for perror
  */
@@ -22,6 +35,110 @@ void error(char *msg) {
   perror(msg);
   exit(1);
 }
+
+int peer_add(int connfd, char *request, char *version)
+{
+  char buf[BUFSIZE], *file, *host, *port, *rate;
+  int n;
+
+  strtok(request, "path=");
+  file = strtok(NULL, "&");
+  strtok(NULL, "host=");
+  host = strtok(NULL, "&");
+  strtok(NULL, "port=");
+  port = strtok(NULL, "&");
+  strtok(NULL, "rate=");
+  rate = strtok(NULL, "&");
+  
+  dictionary[d_index]->file = file;
+  dictionary[d_index]->host = host;
+  dictionary[d_index]->port = port;
+  dictionary[d_index]->brate = rate;
+  d_index++; 
+
+  sprintf(buf, "%s 200 OK \r\n file: %s\n host: %s\n port: %s\n brate: %s\n", version, file, host, port, rate); 
+  if (n = write(connfd, buf, strlen(buf)) < 0)
+    return -1;
+  return 0;
+}
+
+int build_tcp_headers(content_t *file_array, int n)
+{
+  int i, chunks = n;
+  for (i=0; i<n; i++)
+  {
+    
+  }
+  return 0;
+} 
+
+int peer_view(int connfd, char *request, char *version)
+{
+  char buf[BUFSIZE], *file;
+  int i, n, found=0, loc_index=0, result;
+  content_t locations[BUFSIZE]; /* holds all of the content structs of the requested uri */
+
+  strtok(request, "view/");
+  file = strtok(NULL, " ");
+  /* search dictionary for file */
+  for (i=0; i<index; i++)
+  {
+    if (strcmp(file, dictionary[i]->file) == 0) {/* file found */
+      found = 1;
+      locations[loc_index] = dictionary[i];
+      loc_index++;
+    }
+  }    
+  if (!found) { 
+    file_not_found();
+    return -1;
+  }
+  result = build_tcp_headers(locations, loc_index);
+  return result;
+}
+
+int peer_config(int connfd, char *request, char *version)
+{
+  char buf[BUFSIZE], *rate;
+  int n;
+
+  strtok(request, "rate=");
+  rate = strtok(NULL, " ");
+}
+
+/*
+ * returns 0 on success, -1 on failure
+ */
+int get_request(int connfd, char *request)
+{
+  char *uri, *version;
+  int result;
+  uri = malloc(BUFSIZE);
+  version = malloc(BUFSIZE);
+
+  strtok(request, " ");
+  *uri = strtok(NULL, " ");
+  *version = strtok(NULL, " ");
+
+  if (strstr(uri, "add")){
+    result = peer_add(connfd, uri, version);
+  } 
+  else if (strstr(uri, "view")) {
+    result = peer_view(connfd, uri, version);
+  }
+  else if (strstr(uri, "config")) {
+    result = peer_config(connfd, uri, version);
+  }
+  else if (strstr(uri, "status")) {
+    result = peer_status(uri);
+  }
+  else { /*not a valid get request*/
+    result -1;
+  }
+  free(uri);
+  free(version);
+  return result;
+} 
 
 int main(int argc, char **argv) {
   int sockfd; /* socket */
