@@ -66,7 +66,8 @@ int main(int argc, char **argv) {
     n = sendto(sockfd, buf, strlen(buf), 0, &serveraddr, serverlen);
     if (n < 0) 
       error("ERROR in sendto");
-    
+
+    bzero(buf,BUFSIZE);
     /* print the server's reply */
     n = recvfrom(sockfd, buf, strlen(buf), 0, &serveraddr, &serverlen);
     if (n < 0) 
