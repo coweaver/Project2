@@ -74,10 +74,13 @@ int peer_add(int connfd, char *request, char *version)
   d_index++; 
 
   sprintf(buf, "%s 200 OK \r\n file: %s\n host: %s\n port: %s\n brate: %s\n", version, file, host, port, rate); 
+
   if ((n = write(connfd, buf, strlen(buf))) < 0)
+
     return -1;
   return 0;
 }
+
 
 
 int peer_view(int connfd, char *request, char *version)
@@ -89,6 +92,7 @@ int peer_view(int connfd, char *request, char *version)
   strtok(request, "view/");
   file = strtok(NULL, " ");
   /* search dictionary for file */
+
   for (i=0; i<BUFSIZE; i++)
     {
       if (strcmp(file, dictionary[i]->file) == 0) {/* file found */
@@ -97,10 +101,12 @@ int peer_view(int connfd, char *request, char *version)
 	loc_index++;
       }
     }    
+
   if (!found) { 
     file_not_found();
     return -1;
   }
+
   //  result = build_tcp_headers(locations, loc_index);
   return 0;
 }
@@ -119,10 +125,13 @@ int peer_status(char *uri){
   return 0;
 }
 
+/*
+ * returns 0 on success, -1 on failure
+ */
 int get_request(int connfd, char *request)
 {
   char *uri, *version;
-  int result=0;
+  int result;
   uri = malloc(BUFSIZE);
   version = malloc(BUFSIZE);
 
@@ -143,6 +152,7 @@ int get_request(int connfd, char *request)
     result = peer_status(uri);
   }
   else { /*not a valid get request*/
+
     result =  -1;
   }
   free(uri);
@@ -256,6 +266,7 @@ int handle_CCP_packet(char *buf, char *hostaddrp, active_flow *flows[], int num_
   
   return num_flows;
 }
+
 
 
 
