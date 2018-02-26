@@ -112,7 +112,7 @@ int peer_view(int connfd, char *request, char *version)
     return -1;
   }
 
-  int result = send_CCP_request(connfd, file, locations, loc_index);
+  int result = send_CCP_request(connfd, );
   return result;
 }
 
@@ -170,12 +170,37 @@ int send_CCP_request(int connfd, char *file, content_t locations[], int loc_inde
 
 
 
-int send_CCP_accept(active_flow *flow, int portno){
+int send_CCP_accept(active_flow *flow, int CCP_sockfd){
   char buf[BUFSIZE];
   bzero(buf, BUFSIZE);
   
+  fseek(flow->file_fd, 0, SEEK_END);
+  int size = ftell(flow->file_fd);
+  rewind(flow->file_fd);
+  uint16_t *len, *win_size, *chk_sum, *flags;
+  *len = sizeof(int);
+  *win_size = 1<<8;
+  *chk_sum = 1<<8;
+  *flags = 1<<15 | 1<<14;
   
+  
+  memcpy(buf, flow->sourceport, 2);
+  memcpy(buf+2, flow->destport, 2);
+  memcpy(buf+4, flow->my_seq_n, 2);
+  memcpy(buf+6, flow->your_seq_n, 2);
+  memcpy(buf+8, len, 2);
+  memcpy(buf+10, win_size, 2);
+  memcpy(buf+12, flags, 2);
+  memcpy(buf+14, chk_sum, 2);
+  
+  memcpy(buf+16, &size, *len);
 
+  n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+	     (struct sockaddr *) &(flow->partneraddr), flow->addrlen); 
+  if (n < 0 )
+    error("ERROR on sendto");
+  
+  flow->my_seq_n += 1;
 }
 
 
@@ -233,7 +258,7 @@ return 0;
 
 
 
-int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno){
+int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd){
 
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
 
@@ -246,7 +271,8 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno){
       else{
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
-	new->destport = dest;
+	new->destport = source;
+	new->sourceport = portno;
 	new->your_seq_n = seq_n;
 	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
 	new->last_clock.tv_usec = 0;
@@ -258,7 +284,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno){
 	flows[num_flows] = new;
 	num_flows += 1;
 	
-	send_CCP_accept(new);
+	send_CCP_accept(new, CCP_sockfd);
       }
     }  
   }else{//Existing Flow
@@ -403,7 +429,7 @@ int main(int argc, char **argv) {
 		 hostp->h_name, hostaddrp);
 	  printf("server received %d/%d bytes: %s\n", (int)strlen(buf), n, buf);
 
-	  handle_CCP_packet(buf, clientaddr, CCP_portno);
+	  handle_CCP_packet(buf, clientaddr, CCP_portno, CCP_sockfd);
 	
 	}else{ // act_fd is a client (i.e. GET request)
 

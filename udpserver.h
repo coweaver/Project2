@@ -18,7 +18,9 @@
 
 typedef struct active_flow {
   struct sockaddr_in partneraddr;
+  int addrlen;
   uint16_t destport;
+  uint16_t sourceport;
   uint16_t my_seq_n;
   uint16_t your_seq_n;
   struct timeval last_clock;
