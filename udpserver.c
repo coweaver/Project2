@@ -164,9 +164,21 @@ int get_request(int connfd, char *request)
 } 
 
 
-int send_CCP_request(int connfd, char *file, content_t locations, int loc_index){
+int send_CCP_request(int connfd, char *file, content_t locations[], int loc_index){
   return 0;
 }
+
+
+
+int send_CCP_accept(active_flow *flow, int portno){
+  char buf[BUFSIZE];
+  bzero(buf, BUFSIZE);
+  
+  
+
+}
+
+
 
 
 
@@ -220,11 +232,8 @@ return 0;
 }
 
 
-int send_synack(active_flow *flow){
-  return 0;
-}
 
-int handle_CCP_packet(char *buf, char *hostaddrp){
+int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno){
 
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
 
@@ -236,7 +245,8 @@ int handle_CCP_packet(char *buf, char *hostaddrp){
       if(strlen(buf) == 0) printf("Empty CCP request");
       else{
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
-	new->hostaddrp = hostaddrp;
+	new->partneraddr = clientaddr;
+	new->destport = dest;
 	new->your_seq_n = seq_n;
 	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
 	new->last_clock.tv_usec = 0;
@@ -248,7 +258,7 @@ int handle_CCP_packet(char *buf, char *hostaddrp){
 	flows[num_flows] = new;
 	num_flows += 1;
 	
-	send_synack(new);
+	send_CCP_accept(new);
       }
     }  
   }else{//Existing Flow
@@ -393,7 +403,7 @@ int main(int argc, char **argv) {
 		 hostp->h_name, hostaddrp);
 	  printf("server received %d/%d bytes: %s\n", (int)strlen(buf), n, buf);
 
-	  handle_CCP_packet(buf, hostaddrp);
+	  handle_CCP_packet(buf, clientaddr, CCP_portno);
 	
 	}else{ // act_fd is a client (i.e. GET request)
 
