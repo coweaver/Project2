@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <netdb.h>
+#include <sys/select.h>
 #include <sys/types.h> 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -24,6 +25,7 @@ typedef struct active_flow {
   FILE *file_fd;
   int client_fd;
 } active_flow;
+
 
 
 typedef struct content *content_t;
@@ -55,19 +57,49 @@ int file_not_found(){
 
 int peer_add(int connfd, char *request, char *version)
 {
-  char buf[BUFSIZE], *file, *host, *port, *rate;
+  printf("Starting peer_add: %s\n", request); 
+  char *temp, key[100], val[100], buf[BUFSIZE], file[100], host[100], port[100], rate[100];
   int n;
+ 
+  bzero(key, 100);
+  bzero(val, 100);
 
-  strtok(request, "path=");
-  file = strtok(NULL, "&");
-  strtok(NULL, "host=");
-  host = strtok(NULL, "&");
-  strtok(NULL, "port=");
-  port = strtok(NULL, "&");
-  strtok(NULL, "rate=");
-  rate = strtok(NULL, "&");
+  strtok(request, "?");
+  temp = strtok(NULL, "&");
+  while(temp){
+    sscanf(temp, "%[^=]=%s", key, val);
+    if(strcmp(key, "path")==0)
+      snprintf(file, sizeof(val), "%s", val); 
+    if(strcmp(key, "host")==0)
+      snprintf(host, sizeof(val), "%s", val); 
+    if(strcmp(key, "port")==0)
+      snprintf(port, sizeof(val), "%s", val); 
+    if(strcmp(key, "rate")==0)
+      snprintf(rate, sizeof(val), "%s", val); 
+    
+    temp = strtok(NULL, "&");
+  }    
+
   
+  printf("Finished parse\n");
+    
+  if(strcmp(file,  "")==0){
+    printf("No file path found\n");
+    return -1;
+  }else if(strcmp(host, "")==0){
+    printf("No host found\n");
+    return -1;
+  }else if(strcmp(port,"")==0){
+    printf("No port found\n");
+    return -1;
+  }
+  
+  printf("here\n");
+
+  dictionary[d_index] = (content_t)malloc(sizeof(struct content));
+
   dictionary[d_index]->file = file;
+  printf("this shit littereally works\n");
   dictionary[d_index]->host = host;
   dictionary[d_index]->port = port;
   dictionary[d_index]->brate = rate;
@@ -76,8 +108,8 @@ int peer_add(int connfd, char *request, char *version)
   sprintf(buf, "%s 200 OK \r\n file: %s\n host: %s\n port: %s\n brate: %s\n", version, file, host, port, rate); 
 
   if ((n = write(connfd, buf, strlen(buf))) < 0)
-
-    return -1;
+    error("ERROR on write");
+    
   return 0;
 }
 
@@ -130,14 +162,15 @@ int peer_status(char *uri){
  */
 int get_request(int connfd, char *request)
 {
+  printf("get_request: %s", request);
   char *uri, *version;
   int result;
-  uri = malloc(BUFSIZE);
-  version = malloc(BUFSIZE);
 
   strtok(request, " ");
   uri = strtok(NULL, " ");
-  version = strtok(NULL, " ");
+  version = strtok(NULL, "\r\n");
+
+  printf("%s, %s\n", uri,  version);
 
   if (strstr(uri, "add")){
     result = peer_add(connfd, uri, version);
@@ -152,11 +185,8 @@ int get_request(int connfd, char *request)
     result = peer_status(uri);
   }
   else { /*not a valid get request*/
-
     result =  -1;
   }
-  free(uri);
-  free(version);
   return result;
 } 
 
@@ -300,7 +330,7 @@ int main(int argc, char **argv) {
     error("ERROR opening CCP socket");
 
   HTTP_sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  if (CCP_sockfd < 0)
+  if (HTTP_sockfd < 0)
     error("ERROR opening HTTP socket");
 
   /* setsockopt: Handy debugging trick that lets 
@@ -362,10 +392,12 @@ int main(int argc, char **argv) {
       error("ERROR on select");
 
     for(int act_fd = 0; act_fd < FD_SETSIZE; ++act_fd){
+
       if( FD_ISSET(act_fd, &read_fds) ){
 	
 	if( act_fd == HTTP_sockfd ){ //New connection requested
-	
+	  printf("Creating New Connection...\n");
+
 	  int connfd = accept(act_fd, (struct sockaddr *) &clientaddr, &clientlen);
 	  if(connfd < 0)
 	    error("ERROR on accept");
@@ -382,10 +414,13 @@ int main(int argc, char **argv) {
 	  
 	  FD_SET(connfd, &active_fds);
 
-	}else if ( act_fd == CCP_sockfd ){ //Backend (CCP) Packet received
+	  printf("Connection created.\n");
+
+	}
+        else if ( act_fd == CCP_sockfd ){ //Backend (CCP) Packet received
 	  bzero(buf, BUFSIZE);
 
-	  //TIMING SHOULD BE IMPLEMENTED HERE
+	  //RTT TIMING SHOULD BE IMPLEMENTED HERE
 	  n = recvfrom(act_fd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
 	  if (n < 0)
 	    error("ERROR in recvfrom");
@@ -403,8 +438,10 @@ int main(int argc, char **argv) {
 
 	  handle_CCP_packet(buf, hostaddrp, flows, num_flows);
 	
-	}else{ // act_fd is a client (i.e. GET request
+	}else{ // act_fd is a client (i.e. GET request)
+
 	  bzero(buf, BUFSIZE);
+
 	  n = read(act_fd, buf, BUFSIZE);
 	  if ( n < 0)
 	    error("ERROR reading from client");
