@@ -112,8 +112,7 @@ int peer_view(int connfd, char *request, char *version)
     return -1;
   }
 
-  int result = send_CCP_request(connfd, );
-  return result;
+  return 0;
 }
 
 int peer_config(int connfd, char *request, char *version)
@@ -164,6 +163,27 @@ int get_request(int connfd, char *request)
 } 
 
 
+
+int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size, 
+		       uint16_t *flags, uint16_t *chk_sum){  
+  memcpy(buf, &flow->sourceport, 2);
+  memcpy(buf+2, &flow->destport, 2);
+  memcpy(buf+4, &flow->my_seq_n, 2);
+  memcpy(buf+6, &flow->your_seq_n, 2);
+  if(*len > 0)
+    memcpy(buf+8, len, 2);
+  else{
+    memcpy(buf+8, (char *)0xFF, 2); 
+  }
+  memcpy(buf+10, win_size, 2);
+  memcpy(buf+12, flags, 2);
+  memcpy(buf+14, chk_sum, 2);
+  
+  return 0;
+}
+
+
+
 int send_CCP_request(int connfd, char *file, content_t locations[], int loc_index){
   return 0;
 }
@@ -177,30 +197,85 @@ int send_CCP_accept(active_flow *flow, int CCP_sockfd){
   fseek(flow->file_fd, 0, SEEK_END);
   int size = ftell(flow->file_fd);
   rewind(flow->file_fd);
-  uint16_t *len, *win_size, *chk_sum, *flags;
-  *len = sizeof(int);
-  *win_size = 1<<8;
-  *chk_sum = 1<<8;
-  *flags = 1<<15 | 1<<14;
   
+  uint16_t len, win_size, chk_sum, flags;
+  len = sizeof(int);
+  win_size = 1<<8; // WINDOW SIZE()
+  chk_sum = 1<<8; // CHECKSUM()
+  flags = 1<<15 | 1<<14;
   
-  memcpy(buf, flow->sourceport, 2);
-  memcpy(buf+2, flow->destport, 2);
-  memcpy(buf+4, flow->my_seq_n, 2);
-  memcpy(buf+6, flow->your_seq_n, 2);
-  memcpy(buf+8, len, 2);
-  memcpy(buf+10, win_size, 2);
-  memcpy(buf+12, flags, 2);
-  memcpy(buf+14, chk_sum, 2);
+  build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
-  memcpy(buf+16, &size, *len);
+  memcpy(buf+16, &size, len);
 
-  n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
-	     (struct sockaddr *) &(flow->partneraddr), flow->addrlen); 
-  if (n < 0 )
+  int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
+  if (n < 0)
     error("ERROR on sendto");
   
   flow->my_seq_n += 1;
+  
+  return 0;
+}
+
+
+
+
+
+
+int send_CCP_ack(active_flow *flow, int CCP_sockfd){
+  char buf[BUFSIZE];
+  bzero(buf, BUFSIZE);
+
+  uint16_t len, win_size, flags, chk_sum;
+  len = 0;
+  win_size = 1<<8; //WINDOW SIZE
+  chk_sum = 1<<8; // CHECK SUM
+  flags = 1<<15 | 1<<13; // ACK & FIN
+  
+  build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
+  
+  int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
+  if (n < 0 )
+    error("ERROR on sendto");
+
+  return 0;
+}
+
+
+int send_CCP_data(active_flow *flow, int CCP_sockfd){
+  char buf[BUFSIZE];
+  bzero(buf, BUFSIZE);
+
+  uint16_t len, win_size, flags, chk_sum;
+  win_size = 1<<8; // WINDOW SIZE
+  chk_sum = 1<<8; // CHECK SUM
+  flags = 1<<15;
+
+  fpos_t curr;
+  fgetpos(flow->file_fd, &curr);
+  fseek(flow->file_fd, 0, SEEK_END);
+  len = ftell(flow->file_fd) - curr; 
+  fsetpos(flow->file_fd, &curr);
+
+  if(len > 255) len = 255;
+
+  build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
+  
+  fread(buf+16, 255, 1, flow->file_fd);
+
+ 
+  int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
+  if (n < 0 )
+    error("ERROR on sendto");
+
+
+  flow->my_seq_n += 1;
+  
+  return 0;
+
 }
 
 
@@ -269,18 +344,20 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
     else{// new flow
       if(strlen(buf) == 0) printf("Empty CCP request");
       else{
+	//create new active flow
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
 	new->destport = source;
 	new->sourceport = portno;
 	new->your_seq_n = seq_n;
 	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
-	new->last_clock.tv_usec = 0;
+	new->last_clock = 0;
 	new->RTTEstimate = 0;
 	new->client_fd = 0;
         new->file_fd = fopen(buf, "r");
 	if( new->file_fd == NULL) // could not locate file
 	  error("CCP requested a file that does not exist");
+	//add flow to flows
 	flows[num_flows] = new;
 	num_flows += 1;
 	
@@ -288,7 +365,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       }
     }  
   }else{//Existing Flow
-
+    //    active_flow *flow = find_flow(clientaddr, 
     
   }
   
@@ -350,10 +427,10 @@ int main(int argc, char **argv) {
   HTTP_serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
   HTTP_serveraddr.sin_port = htons((unsigned short)HTTP_portno);
 
-  bzero((char *) &CCP_serveraddr, sizeof(HTTP_serveraddr));
+  bzero((char *) &CCP_serveraddr, sizeof(CCP_serveraddr));
   CCP_serveraddr.sin_family = AF_INET;
   CCP_serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
-  CCP_serveraddr.sin_port = htons((unsigned short)HTTP_portno);
+  CCP_serveraddr.sin_port = htons((unsigned short)CCP_portno);
 
   /* 
    * bind: associate the parent socket with a port 
