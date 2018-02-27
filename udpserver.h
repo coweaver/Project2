@@ -15,8 +15,11 @@
 #include <arpa/inet.h>
 
 #define BUFSIZE 1024
+#define PACKETSIZE 1500
+
 
 typedef struct active_flow {
+  uint8_t id;
   struct sockaddr_in partneraddr;
   int addrlen;
   uint16_t destport;
@@ -72,3 +75,10 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 
 int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size,
 		     uint16_t *flags, uint16_t *chk_sum);
+
+
+active_flow *find_flow(uint8_t id);
+
+inf remove_flow(uint8_t id);
+
+

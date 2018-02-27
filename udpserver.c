@@ -163,20 +163,40 @@ int get_request(int connfd, char *request, int CCP_sockfd)
   return result;
 } 
 
+//Returns active flow struct on sucess, NULL on failure
+active_flow *find_flow(id){
+  for(int i = 0; i < num_flows; i++){
+    if( flows[i]->id == id ){
+      return flows[i];
+    }
+  }
+  return NULL;
+}
+
+int remove_flow(id){
+  int found=0;
+  for(int i = 0; i < num_flows; i++){
+    if( flows[i]->id == id ){
+      found = 1;
+      
+}
+
+
 
 int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size, 
-		       uint16_t *flags, uint16_t *chk_sum){  
-  memcpy(buf, &flow->sourceport, 2);
-  memcpy(buf+2, &flow->destport, 2);
-  memcpy(buf+4, &flow->my_seq_n, 2);
-  memcpy(buf+6, &flow->your_seq_n, 2);
+		       uint8_t *flags, uint16_t *chk_sum){  
+  memcpy(buf, flow->sourceport, 2);
+  memcpy(buf+2, flow->destport, 2);
+  memcpy(buf+4, flow->my_seq_n, 2);
+  memcpy(buf+6, flow->your_seq_n, 2);
   if(*len > 0)
     memcpy(buf+8, len, 2);
   else{
     memcpy(buf+8, (char *)0xFF, 2); 
   }
   memcpy(buf+10, win_size, 2);
-  memcpy(buf+12, flags, 2);
+  memcpy(buf+12, flags, 1);
+  memcpy(buf+13, flow->id, 1);
   memcpy(buf+14, chk_sum, 2);
   
   return 0;
@@ -208,7 +228,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   uint16_t len, win_size, flags, chk_sum;
   win_size = 1<<8; // WINDOW SIZE
   chk_sum = 1<<8; //CHECK SUM
-  flags = 1<<14; // SYN
+  flags = 1<<6; // SYN
   len = strlen(file->file);
 
   build_CCP_header(buf, af, &len, &win_size, &flags, &chk_sum);
@@ -221,7 +241,6 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
     error("THAT SHIT DIDNT WORK\n"); 
   free(af);
   return n;
-
 }
 
 
@@ -238,7 +257,7 @@ int send_CCP_accept(active_flow *flow, int CCP_sockfd){
   len = sizeof(int);
   win_size = 1<<8; // WINDOW SIZE()
   chk_sum = 1<<8; // CHECKSUM()
-  flags = 1<<15 | 1<<14;
+  flags = 1<<7 | 1<<6;
   
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
@@ -263,11 +282,12 @@ int send_CCP_ack(active_flow *flow, int CCP_sockfd){
   char buf[BUFSIZE];
   bzero(buf, BUFSIZE);
 
-  uint16_t len, win_size, flags, chk_sum;
+  uint16_t len, win_size, chk_sum;
+  uint8_t flags;
   len = 0;
   win_size = 1<<8; //WINDOW SIZE
   chk_sum = 1<<8; // CHECK SUM
-  flags = 1<<15 | 1<<13; // ACK & FIN
+  flags = 1<<7; // ACK
   
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
@@ -295,13 +315,13 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
   len = ftell(flow->file_fd) - curr; 
   fsetpos(flow->file_fd, &curr);
 
-  if(len > 255) len = 255;
+  if(len > PACKETSIZE - 16) len = PACKETSIZE - 16;  
+  else flags = flags | 1<<13; //fin
 
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
-  fread(buf+16, 255, 1, flow->file_fd);
+  fread(buf+16, len, 1, flow->file_fd);
 
- 
   int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
 	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
   if (n < 0 )
@@ -321,7 +341,7 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
 // Fills header values and puts data in buf, returns -1 on failure
 int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, 
 		     uint16_t *ack_n, uint16_t *len, uint16_t *win_size, uint16_t *ack, uint16_t *syn,
-		     uint16_t *fin, uint16_t *chk_sum){
+		     uint16_t *fin, uint16_t *chk_sum, uint8_t *id){
 
   if(buf[strlen(buf)-1] == '\n'){
     buf[strlen(buf)-1] = 0;
@@ -340,6 +360,7 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
   memcpy(len, buf+8, 2);  
   memcpy(win_size, buf+10, 2);
   memcpy(chk_sum, buf+14, 2);
+  memcpy(id, buf+13, 1);
   
 
   //read flags
@@ -372,37 +393,69 @@ return 0;
 int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd){
 
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
+  uint8_t id;
 
-  CCP_parse_header(buf, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum);
+  CCP_parse_header(buf, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum. &id);
+
   if(!ack){
     if(!syn)
       printf("Invalid CCP Header");
     else{// new flow
-      if(strlen(buf) == 0) printf("Empty CCP request");
+      if(strlen(buf) == 0) printf("Empty CCP request"); // buf contains file request
       else{
 	//create new active flow
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
 	new->destport = dest;
-	new->your_seq_n = seq_n;
+	new->sourceport = portno;
+	new->your_seq_n = seq_n+1;
 	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
 	new->last_clock = 0;
 	new->RTTEstimate = 0;
 	new->client_fd = 0;
         new->file_fd = fopen(buf, "r");
-	if( new->file_fd == NULL) // could not locate file
-	  error("CCP requested a file that does not exist");
+	new->id = id;
+	if( new->file_fd == NULL){ // could not locate file
+	  printf("CCP requested a file that does not exist");
+	  return -1;
+	}
 	//add flow to flows
 	flows[num_flows] = new;
 	num_flows += 1;
 	
-	send_CCP_accept(new, portno);
+	send_CCP_accept(new, CCP_sockfd);
       }
     }  
+
   }else{//Existing Flow
-    //    active_flow *flow = find_flow(clientaddr, 
-    
-  }
+    active_flow *flow = find_flow(id);
+    if( flow = NULL){
+      printf("Invalid flow ID");
+      return -1;
+    }
+    if(seq_n != flow->your_seq_n){ //Packet lost
+      handle_packet_loss(flow, seq_n);
+    }else{
+      if(syn){ //SYN-ACK 
+	if( synchronize_seq(flow, seq_n)) //returns 1 if seq_n valid, 0 if invalid and updates flow
+	  send_HTTP_header(flow, buf); //buf = file length 
+	  send_CCP_ack(flow, CCP_sockfd);
+	else{
+	  //resend SYN
+	}
+      }else if (flow->file_fd != NULL){ // sending file
+	send_CCP_data(flow, CCP_sockfd);
+      }else{ //recieving data in buf
+	n = write( flow->clientfd, buf, strlen(buf));
+	if( n < 0)
+	  error("ERROR on write");
+	send_CCP_ack(flow, CCP_sockfd);
+	if(fin){
+	  send_CCP_ackfin(flow, CCP_sockfd);
+	  remove_flow(flow);
+	}
+      }	
+    }
   
   return num_flows;
 }
