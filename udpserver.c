@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <time.h>
 #include "udpserver.h"
 
 /*
@@ -112,7 +113,7 @@ int peer_view(int connfd, char *request, char *version)
     return -1;
   }
 
-  int result = send_CCP_request(connfd, );
+  int result = send_CCP_request(connfd, file, locations, loc_index);
   return result;
 }
 
@@ -164,43 +165,42 @@ int get_request(int connfd, char *request)
 } 
 
 
-int send_CCP_request(int connfd, char *file, content_t locations[], int loc_index){
-  return 0;
+int send_CCP_request(int connfd, content_t file){
+  char buf[BUFSIZE];
+  int seq_num, n;
+  active_flow af;
+  struct sockaddr_in partneraddr;
+
+
+  af = malloc(sizeof(active_flow));
+  
+  af->destport = file->port;
+  af->my_seq_number = (uint16_t)rand();
+  af->client_fd = connfd;
+
+  bzero((char *) &partneraddr, sizeof(partneraddr));
+  partneraddr.sin_family = AF_INET;
+  partneraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+  partneraddr.sin_port = htons((unsigned short)file->port);
+
+  af->partneraddr = partneraddr;
+
+  buf = build_ccp_header()
+  af->last_clock = clock();
+  if (n = sendto(CCP_sockfd, buf, strlen(buf), 0, (struct sockaddr *) &af->partneraddr, sizeof(af->partneraddr)) < 0)
+    error("THAT SHIT DIDNT WORK\n"); 
+  free(af);
+  return n;
 }
 
 
 
-int send_CCP_accept(active_flow *flow, int CCP_sockfd){
+int send_CCP_accept(active_flow *flow, int portno){
   char buf[BUFSIZE];
   bzero(buf, BUFSIZE);
   
-  fseek(flow->file_fd, 0, SEEK_END);
-  int size = ftell(flow->file_fd);
-  rewind(flow->file_fd);
-  uint16_t *len, *win_size, *chk_sum, *flags;
-  *len = sizeof(int);
-  *win_size = 1<<8;
-  *chk_sum = 1<<8;
-  *flags = 1<<15 | 1<<14;
   
-  
-  memcpy(buf, flow->sourceport, 2);
-  memcpy(buf+2, flow->destport, 2);
-  memcpy(buf+4, flow->my_seq_n, 2);
-  memcpy(buf+6, flow->your_seq_n, 2);
-  memcpy(buf+8, len, 2);
-  memcpy(buf+10, win_size, 2);
-  memcpy(buf+12, flags, 2);
-  memcpy(buf+14, chk_sum, 2);
-  
-  memcpy(buf+16, &size, *len);
 
-  n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
-	     (struct sockaddr *) &(flow->partneraddr), flow->addrlen); 
-  if (n < 0 )
-    error("ERROR on sendto");
-  
-  flow->my_seq_n += 1;
 }
 
 
@@ -258,7 +258,7 @@ return 0;
 
 
 
-int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd){
+int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno){
 
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
 
@@ -271,8 +271,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       else{
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
-	new->destport = source;
-	new->sourceport = portno;
+	new->destport = dest;
 	new->your_seq_n = seq_n;
 	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
 	new->last_clock.tv_usec = 0;
@@ -284,7 +283,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	flows[num_flows] = new;
 	num_flows += 1;
 	
-	send_CCP_accept(new, CCP_sockfd);
+	send_CCP_accept(new);
       }
     }  
   }else{//Existing Flow
@@ -429,7 +428,7 @@ int main(int argc, char **argv) {
 		 hostp->h_name, hostaddrp);
 	  printf("server received %d/%d bytes: %s\n", (int)strlen(buf), n, buf);
 
-	  handle_CCP_packet(buf, clientaddr, CCP_portno, CCP_sockfd);
+	  handle_CCP_packet(buf, clientaddr, CCP_portno);
 	
 	}else{ // act_fd is a client (i.e. GET request)
 
