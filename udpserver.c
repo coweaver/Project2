@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <time.h>
 #include "udpserver.h"
 
 /*
@@ -88,7 +89,7 @@ int peer_add(int connfd, char *request, char *version)
 
 
 
-int peer_view(int connfd, char *request, char *version)
+int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
 {
   char *file;
   int i, found=0, loc_index=0;
@@ -111,8 +112,8 @@ int peer_view(int connfd, char *request, char *version)
     file_not_found();
     return -1;
   }
-
-  return 0;
+  int result = send_CCP_request(connfd, locations[0], CCP_sockfd);
+  return result;
 }
 
 int peer_config(int connfd, char *request, char *version)
@@ -132,7 +133,7 @@ int peer_status(char *uri){
 /*
  * returns 0 on success, -1 on failure
  */
-int get_request(int connfd, char *request)
+int get_request(int connfd, char *request, int CCP_sockfd)
 {
   printf("get_request: %s", request);
   char *uri, *version;
@@ -148,7 +149,7 @@ int get_request(int connfd, char *request)
     result = peer_add(connfd, uri, version);
   } 
   else if (strstr(uri, "view")) {
-    result = peer_view(connfd, uri, version);
+    result = peer_view(connfd, uri, version, CCP_sockfd);
   }
   else if (strstr(uri, "config")) {
     result = peer_config(connfd, uri, version);
@@ -161,7 +162,6 @@ int get_request(int connfd, char *request)
   }
   return result;
 } 
-
 
 
 int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size, 
@@ -184,8 +184,44 @@ int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_
 
 
 
-int send_CCP_request(int connfd, char *file, content_t locations[], int loc_index){
-  return 0;
+int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
+  char buf[BUFSIZE];
+  int n;
+  active_flow *af;
+  struct sockaddr_in partneraddr;
+
+
+  af = (active_flow *)malloc(sizeof(active_flow));
+  
+  memcpy(&(af->destport), file->port, 2);
+
+  af->my_seq_n = (uint16_t)rand();
+  af->client_fd = connfd;
+
+  bzero((char *) &partneraddr, sizeof(partneraddr));
+  partneraddr.sin_family = AF_INET;
+  partneraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+  partneraddr.sin_port = htons((unsigned short)file->port);
+
+  af->partneraddr = partneraddr;
+
+  uint16_t len, win_size, flags, chk_sum;
+  win_size = 1<<8; // WINDOW SIZE
+  chk_sum = 1<<8; //CHECK SUM
+  flags = 1<<14; // SYN
+  len = strlen(file->file);
+
+  build_CCP_header(buf, af, &len, &win_size, &flags, &chk_sum);
+  memcpy(buf+16, file->file, strlen(file->file));
+
+  af->last_clock = clock();
+  n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+	     (struct sockaddr *) &af->partneraddr, sizeof(af->partneraddr));
+  if (n< 0)
+    error("THAT SHIT DIDNT WORK\n"); 
+  free(af);
+  return n;
+
 }
 
 
@@ -347,8 +383,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	//create new active flow
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
-	new->destport = source;
-	new->sourceport = portno;
+	new->destport = dest;
 	new->your_seq_n = seq_n;
 	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
 	new->last_clock = 0;
@@ -361,7 +396,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	flows[num_flows] = new;
 	num_flows += 1;
 	
-	send_CCP_accept(new, CCP_sockfd);
+	send_CCP_accept(new, portno);
       }
     }  
   }else{//Existing Flow
@@ -516,7 +551,7 @@ int main(int argc, char **argv) {
 	  if ( n < 0)
 	    error("ERROR reading from client");
 	  
-	  get_request(act_fd, buf);
+	  get_request(act_fd, buf, CCP_sockfd);
 	  
 	  close(act_fd);
 	  FD_CLR(act_fd, &active_fds);

@@ -53,12 +53,12 @@ void error(char *msg);
 
 int file_not_found();
 int peer_add(int connfd, char *request, char *version);
-int peer_view(int connfd, char *request, char *version);
+int peer_view(int connfd, char *request, char *version, int CCP_sockfd);
 int peer_config(int connfd, char *request, char *version);
 int peer_status(char *uri);
-int get_request(int connfd, char *request);
+int get_request(int connfd, char *request, int CCP_sockfd);
 
-int send_CCP_request(int connfd, char *file, content_t locations[], int loc_index);
+int send_CCP_request(int connfd, content_t file, int CCP_sockfd);
 int send_CCP_accept(active_flow *flow, int CCP_sockfd);
 int send_CCP_ack(active_flow *flow, int CCP_sockfd);
 int send_CCP_data(active_flow *flow, int CCP_sockfd);
@@ -69,3 +69,6 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
 		     uint16_t *chk_sum);
 
 int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd);
+
+int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size,
+		     uint16_t *flags, uint16_t *chk_sum);
