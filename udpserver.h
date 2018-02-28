@@ -90,5 +90,8 @@ int handle_packet_loss(active_flow *flow, uint16_t seq_n);
 
 int synchronize_seq(active_flow *flow, uint16_t seq_n);
 
-int send_HTTP_header(active_flow *flow, char *buf);
+int send_HTTP_header(active_flow *flow, uint64_t file_length);
 
+char *print_time();
+
+char *find_type();

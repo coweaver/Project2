@@ -27,6 +27,7 @@ void error(char *msg) {
 
 
 int file_not_found(){
+  printf("File Not Found \n");
   return 0;
 }
 
@@ -96,18 +97,23 @@ int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
   int i, found=0, loc_index=0;
   content_t locations[BUFSIZE]; /* holds all of the content structs of the requested uri */
 
+  printf("We are in peer_view:\n");
+
   strtok(request, "view/");
   file = strtok(NULL, " ");
   /* search dictionary for file */
 
-  for (i=0; i<BUFSIZE; i++)
+  for (i=0; i<d_index; i++)
     {
+      printf("looking for %s in dictionary, %d\n", file, i);
       if (strcmp(file, dictionary[i]->file) == 0) {/* file found */
 	found = 1;
 	locations[loc_index] = dictionary[i];
 	loc_index++;
       }
     }    
+  
+  printf("Our file is: %s, our host is: %s\n", locations[0]->file, locations[0]->host);
 
   if (!found) { 
     file_not_found();
@@ -166,7 +172,8 @@ int get_request(int connfd, char *request, int CCP_sockfd)
 
 //Returns active flow struct on sucess, NULL on failure
 active_flow *find_flow(uint8_t id){
-  for(int i = 0; i < num_flows; i++){
+  int i;
+  for(i = 0; i < num_flows; i++){
     if( flows[i]->id == id ){
       return flows[i];
     }
@@ -175,9 +182,9 @@ active_flow *find_flow(uint8_t id){
 }
 
 int remove_flow(uint8_t id){
-  int found=0;
+  int i,found;
   active_flow *flow;
-  for(int i = 0; i < num_flows; i++){
+  for(i = 0; i < num_flows; i++){
     if( flows[i]->id == id ){
       found = 1;
       flow = flows[i];
@@ -268,12 +275,12 @@ int send_CCP_accept(active_flow *flow, int CCP_sockfd){
   bzero(buf, PACKETSIZE);
   
   fseek(flow->file_fd, 0, SEEK_END);
-  int size = ftell(flow->file_fd);
+  uint64_t size = ftell(flow->file_fd);
   rewind(flow->file_fd);
   
   uint16_t len, win_size, chk_sum;
   uint8_t  flags;
-  len = sizeof(int);
+  len = sizeof(uint64_t);
   win_size = 0; // WINDOW SIZE()
   chk_sum = 0; // CHECKSUM()
   flags = 1<<7 | 1<<6;
@@ -331,14 +338,19 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
   chk_sum = 0; // CHECK SUM
   flags = 1<<7;
 
+  int temp_len;
   fpos_t curr;
   fgetpos(flow->file_fd, &curr);
-  fseek(flow->file_fd, 0, SEEK_END);
-  len = ftell(flow->file_fd) - curr; 
+  temp_len = ftell(flow->file_fd);
+  fseek(flow->file_fd, 0, SEEK_END); 
+  temp_len = ftell(flow->file_fd) - temp_len;; 
   fsetpos(flow->file_fd, &curr);
 
-  if(len > PACKETSIZE - 16) len = PACKETSIZE - 16;  
-  else flags = flags | 1<<5; //fin
+  if(temp_len > PACKETSIZE - 16) len = PACKETSIZE - 16;  
+  else{
+    len = (uint16_t)temp_len;
+    flags = flags | 1<<5; //fin
+  }
 
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
@@ -368,11 +380,11 @@ int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
 
 
-  flow->last_clock = 0;
   int n = sendto(CCP_sockfd, buf, 16, 0,
 		 (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
   if( n < 0 )
     error("ERROR on sendto");
+  return 0;
 }
 
 
@@ -472,7 +484,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 
     if(syn){ //SYN-ACK 
       flow->your_seq_n = seq_n; // should be 0
-      send_HTTP_header(flow, buf); //buf = file length 
+      send_HTTP_header(flow, *((uint64_t *)buf)); //buf = file length 
       send_CCP_ack(flow, CCP_sockfd);
     }else if (flow->file_fd != NULL){ // sending file
       flow->your_seq_n += 1; // increment partner sequence number
@@ -491,6 +503,66 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
   return num_flows;
 }
 
+
+int send_HTTP_header(active_flow *flow, uint64_t file_length)
+{
+  char buf[BUFSIZE];
+  /* send 200 OK */
+  sprintf(buf, "%s 200 OK\r\n", flow->version);
+  sprintf(buf, "%sContent-type: %s\r\n", buf, find_type(flow->file_name)); 
+  sprintf(buf, "%sContent-length: %llu\r\n",buf, (uint64_t)file_length);
+  sprintf(buf, "%s%s\r\n", buf, print_time());
+  sprintf(buf, "%sConnection: Keep-Alive\r\n", buf);
+  sprintf(buf, "%sAccept-Ranges: bytes\r\n\r\n", buf);
+
+  int n = write(flow->client_fd, buf, strlen(buf));
+  if (n < 0)
+    {  
+      error("ERROR writing to socket");
+      return -1;
+    }
+
+  return 0;
+}
+
+/*
+ *  get_time - prints the date header
+ */
+char *print_time(){
+  char buf[BUFSIZE];
+  time_t t = time(NULL);
+  struct tm *tm = gmtime(&t);
+  char s[64];
+  strftime(s, sizeof(s), "%c", tm); /* formats time into a string */
+  sprintf(buf, "Date: %s GMT", s);
+  char *k = buf;
+  return k;
+}
+
+char *find_type(char* filename){
+  if(strstr(filename, ".txt"))
+    return "text/plain";
+  if(strstr(filename, ".css"))
+    return "text/css";
+  if(strstr(filename, ".htm") || strstr(filename, ".html"))
+    return "text/html";
+  if(strstr(filename, ".gif"))
+    return "image/gif";
+  if(strstr(filename, ".jpg") || strstr(filename, ".jpeg"))
+    return "image/jpeg";
+  if(strstr(filename, ".png"))
+    return "image/png";
+  if(strstr(filename, ".js"))
+    return "application/javascript";
+  if(strstr(filename, ".mp4") || strstr(filename, ".m4v"))
+    return "video/mp4";
+  if(strstr(filename, ".webm"))
+    return "video/webm";
+  if(strstr(filename,".ogg"))
+    return "video/ogg";
+  else
+    return "application/octet-stream";
+}
 
 
 
@@ -576,16 +648,12 @@ int main(int argc, char **argv) {
   clientlen = sizeof(clientaddr);
   while (1) {
 
-    for(int i = 0; i < num_flows; i++){
-      if( flows[i]->last_clock )
-	break;
-    }
-
     read_fds = active_fds;
     if( select( FD_SETSIZE, &read_fds, NULL, NULL, NULL) <0 )
       error("ERROR on select");
-
-    for(int act_fd = 0; act_fd < FD_SETSIZE; ++act_fd){
+    
+    int act_fd;
+    for(act_fd = 0; act_fd < FD_SETSIZE; ++act_fd){
 
       if( FD_ISSET(act_fd, &read_fds) ){
 	
