@@ -30,6 +30,8 @@ typedef struct active_flow {
   int RTTEstimate;
   FILE *file_fd;
   int client_fd;
+  char *version;
+  char *file_name;
 } active_flow;
 
 
