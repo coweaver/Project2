@@ -112,7 +112,7 @@ int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
     file_not_found();
     return -1;
   }
-  int result = send_CCP_request(connfd, locations[0], CCP_sockfd);
+  int result = send_CCP_request(connfd, locations[0], CCP_sockfd, version);
   return result;
 }
 
@@ -204,7 +204,7 @@ int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_
 
 
 
-int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
+int send_CCP_request(int connfd, content_t file, int CCP_sockfd, char* version){
   char buf[BUFSIZE];
   int n;
   active_flow *af;
@@ -224,6 +224,8 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   partneraddr.sin_port = htons((unsigned short)file->port);
 
   af->partneraddr = partneraddr;
+  af->version = version;
+  af->file_name = file->file;
 
   uint16_t len, win_size, flags, chk_sum;
   win_size = 1<<8; // WINDOW SIZE
@@ -438,7 +440,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
     }else{
       if(syn){ //SYN-ACK 
 	if( synchronize_seq(flow, seq_n)) //returns 1 if seq_n valid, 0 if invalid and updates flow
-	  send_HTTP_header(flow, buf); //buf = file length 
+	  send_HTTP_header(flow, (uint64_t)buf); //buf = file length 
 	  send_CCP_ack(flow, CCP_sockfd);
 	else{
 	  //resend SYN
@@ -461,7 +463,76 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 }
 
 
+int send_HTTP_header(active_flow flow, uint64_t file_length)
+{
+  char buf[BUFSIZE];
+  /* send 200 OK */
+  sprintf(buf, "%s 200 OK\r\n", flow->version);
+  sprintf(buf, "%sContent-type: %s\r\n", buf, find_type(flow->file_name)); 
+  sprintf(buf, "%sContent-length: %llu\r\n",buf, (uint64_t)file_length);
+  sprintf(buf, "%s%s\r\n", buf, print_time());
+  sprintf(buf, "%sConnection: Keep-Alive\r\n", buf);
+  sprintf(buf, "%sAccept-Ranges: bytes\r\n\r\n", buf);
 
+  n = write(connfd, buf, strlen(buf));
+  if (n < 0)
+  {  
+    error("ERROR writing to socket");
+    return -1;
+  }
+
+
+  file_buf = malloc(fsize);
+  fread(file_buf, fsize+1, 1, fp);
+  fclose(fp);
+  n = write(connfd, file_buf, fsize);
+  if (n < 0)
+  { 
+    error("ERROR writing to socket");
+    return -1;
+  }
+  free(file_buf);
+  return 0;
+}
+
+/*
+ *  get_time - prints the date header
+ */
+char * print_time()
+{
+  char buf[BUFSIZE];
+  time_t t = time(NULL);
+  struct tm *tm = gmtime(&t);
+  char s[64];
+  strftime(s, sizeof(s), "%c", tm); /* formats time into a string */
+  sprintf(buf, "Date: %s GMT", s);
+  return buf;
+}
+
+char *find_type(char* filename){
+  if(strstr(filename, ".txt"))
+    return "text/plain";
+  if(strstr(filename, ".css"))
+    return "text/css";
+  if(strstr(filename, ".htm") || strstr(filename, ".html"))
+    return "text/html";
+  if(strstr(filename, ".gif"))
+    return "image/gif";
+  if(strstr(filename, ".jpg") || strstr(filename, ".jpeg"))
+    return "image/jpeg";
+  if(strstr(filename, ".png"))
+    return "image/png";
+  if(strstr(filename, ".js"))
+    return "application/javascript";
+  if(strstr(filename, ".mp4") || strstr(filename, ".m4v"))
+    return "video/mp4";
+  if(strstr(filename, ".webm"))
+    return "video/webm";
+  if(strstr(filename,".ogg"))
+    return "video/ogg";
+  else
+    return "application/octet-stream";
+}
 
 int main(int argc, char **argv) {
   int HTTP_sockfd, CCP_sockfd; /* socket */
