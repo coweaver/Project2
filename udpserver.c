@@ -367,7 +367,7 @@ int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
 
 
-  flow->last_clock = 
+  flow->last_clock = 0;
   int n = sendto(CCP_sockfd, buf, 16, 0,
 		 (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
   if( n < 0 )
@@ -576,8 +576,8 @@ int main(int argc, char **argv) {
   while (1) {
 
     for(int i = 0; i < num_flows; i++){
-      if( flows[i]->last_clock 
-
+      if( flows[i]->last_clock )
+	break;
     }
 
     read_fds = active_fds;
