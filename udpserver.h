@@ -62,23 +62,30 @@ int peer_status(char *uri);
 int get_request(int connfd, char *request, int CCP_sockfd);
 
 int send_CCP_request(int connfd, content_t file, int CCP_sockfd);
+int resend_CCP_request(active_flow *flow, int CCP_sockfd);
+
 int send_CCP_accept(active_flow *flow, int CCP_sockfd);
 int send_CCP_ack(active_flow *flow, int CCP_sockfd);
 int send_CCP_data(active_flow *flow, int CCP_sockfd);
-
+int send_CCP_ackfin(active_flow *flow, int CCP_sockfd);
 
 int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, uint16_t *ack_n, 
 		     uint16_t *len, uint16_t *win_size, uint16_t *ack, uint16_t *syn, uint16_t *fin,
-		     uint16_t *chk_sum);
+		     uint16_t *chk_sum, uint8_t *id);
 
 int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd);
 
 int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size,
-		     uint16_t *flags, uint16_t *chk_sum);
+		     uint8_t *flags, uint16_t *chk_sum);
 
 
 active_flow *find_flow(uint8_t id);
 
-inf remove_flow(uint8_t id);
+int remove_flow(uint8_t id);
 
+int handle_packet_loss(active_flow *flow, uint16_t seq_n);
+
+int synchronize_seq(active_flow *flow, uint16_t seq_n);
+
+int send_HTTP_header(active_flow *flow, char *buf);
 

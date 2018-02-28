@@ -164,7 +164,7 @@ int get_request(int connfd, char *request, int CCP_sockfd)
 } 
 
 //Returns active flow struct on sucess, NULL on failure
-active_flow *find_flow(id){
+active_flow *find_flow(uint8_t id){
   for(int i = 0; i < num_flows; i++){
     if( flows[i]->id == id ){
       return flows[i];
@@ -173,22 +173,35 @@ active_flow *find_flow(id){
   return NULL;
 }
 
-int remove_flow(id){
+int remove_flow(uint8_t id){
   int found=0;
+  active_flow *flow;
   for(int i = 0; i < num_flows; i++){
     if( flows[i]->id == id ){
       found = 1;
-      
+      flow = flows[i];
+    }else if(found){
+      flows[i-1] = flows[i];
+      flows[i] = NULL;
+    }
+  }
+  if(!found){
+    printf("not a valid flow id");
+    return -1;
+  }
+  free(flow);
+  num_flows -= 1;
+  return 0;
 }
 
 
 
 int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size, 
-		       uint8_t *flags, uint16_t *chk_sum){  
-  memcpy(buf, flow->sourceport, 2);
-  memcpy(buf+2, flow->destport, 2);
-  memcpy(buf+4, flow->my_seq_n, 2);
-  memcpy(buf+6, flow->your_seq_n, 2);
+		     uint8_t *flags, uint16_t *chk_sum){  
+  memcpy(buf, &(flow->sourceport), 2);
+  memcpy(buf+2, &(flow->destport), 2);
+  memcpy(buf+4, &(flow->my_seq_n), 2);
+  memcpy(buf+6, &(flow->your_seq_n), 2);
   if(*len > 0)
     memcpy(buf+8, len, 2);
   else{
@@ -196,7 +209,7 @@ int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_
   }
   memcpy(buf+10, win_size, 2);
   memcpy(buf+12, flags, 1);
-  memcpy(buf+13, flow->id, 1);
+  memcpy(buf+13, &(flow->id), 1);
   memcpy(buf+14, chk_sum, 2);
   
   return 0;
@@ -205,7 +218,7 @@ int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_
 
 
 int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
-  char buf[BUFSIZE];
+  char buf[PACKETSIZE];
   int n;
   active_flow *af;
   struct sockaddr_in partneraddr;
@@ -215,7 +228,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   
   memcpy(&(af->destport), file->port, 2);
 
-  af->my_seq_n = (uint16_t)rand();
+  af->my_seq_n = 0;
   af->client_fd = connfd;
 
   bzero((char *) &partneraddr, sizeof(partneraddr));
@@ -225,9 +238,10 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
 
   af->partneraddr = partneraddr;
 
-  uint16_t len, win_size, flags, chk_sum;
-  win_size = 1<<8; // WINDOW SIZE
-  chk_sum = 1<<8; //CHECK SUM
+  uint16_t len, win_size,  chk_sum;
+  uint8_t flags;
+  win_size = 0; // WINDOW SIZE
+  chk_sum = 0; //CHECK SUM
   flags = 1<<6; // SYN
   len = strlen(file->file);
 
@@ -235,35 +249,39 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   memcpy(buf+16, file->file, strlen(file->file));
 
   af->last_clock = clock();
-  n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+  n = sendto(CCP_sockfd, buf, len+16, 0, 
 	     (struct sockaddr *) &af->partneraddr, sizeof(af->partneraddr));
   if (n< 0)
     error("THAT SHIT DIDNT WORK\n"); 
-  free(af);
+  
+  af->my_seq_n += 1;
+  flows[num_flows] = af;
+  num_flows += 1;
   return n;
 }
 
 
 
 int send_CCP_accept(active_flow *flow, int CCP_sockfd){
-  char buf[BUFSIZE];
-  bzero(buf, BUFSIZE);
+  char buf[PACKETSIZE];
+  bzero(buf, PACKETSIZE);
   
   fseek(flow->file_fd, 0, SEEK_END);
   int size = ftell(flow->file_fd);
   rewind(flow->file_fd);
   
-  uint16_t len, win_size, chk_sum, flags;
+  uint16_t len, win_size, chk_sum;
+  uint8_t  flags;
   len = sizeof(int);
-  win_size = 1<<8; // WINDOW SIZE()
-  chk_sum = 1<<8; // CHECKSUM()
+  win_size = 0; // WINDOW SIZE()
+  chk_sum = 0; // CHECKSUM()
   flags = 1<<7 | 1<<6;
   
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
   memcpy(buf+16, &size, len);
 
-  int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+  int n = sendto(CCP_sockfd, buf, len+16, 0, 
 	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
   if (n < 0)
     error("ERROR on sendto");
@@ -279,35 +297,38 @@ int send_CCP_accept(active_flow *flow, int CCP_sockfd){
 
 
 int send_CCP_ack(active_flow *flow, int CCP_sockfd){
-  char buf[BUFSIZE];
-  bzero(buf, BUFSIZE);
+  char buf[PACKETSIZE];
+  bzero(buf, PACKETSIZE);
 
   uint16_t len, win_size, chk_sum;
   uint8_t flags;
   len = 0;
-  win_size = 1<<8; //WINDOW SIZE
-  chk_sum = 1<<8; // CHECK SUM
+  win_size = 0; //WINDOW SIZE
+  chk_sum = 0; // CHECK SUM
   flags = 1<<7; // ACK
   
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
-  int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+  int n = sendto(CCP_sockfd, buf, len+16, 0, 
 	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
   if (n < 0 )
     error("ERROR on sendto");
+  
+  flow->my_seq_n += 1;
 
   return 0;
 }
 
 
 int send_CCP_data(active_flow *flow, int CCP_sockfd){
-  char buf[BUFSIZE];
-  bzero(buf, BUFSIZE);
+  char buf[PACKETSIZE];
+  bzero(buf, PACKETSIZE);
 
-  uint16_t len, win_size, flags, chk_sum;
-  win_size = 1<<8; // WINDOW SIZE
-  chk_sum = 1<<8; // CHECK SUM
-  flags = 1<<15;
+  uint16_t len, win_size, chk_sum;
+  uint8_t flags;
+  win_size = 0; // WINDOW SIZE
+  chk_sum = 0; // CHECK SUM
+  flags = 1<<7;
 
   fpos_t curr;
   fgetpos(flow->file_fd, &curr);
@@ -316,25 +337,40 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
   fsetpos(flow->file_fd, &curr);
 
   if(len > PACKETSIZE - 16) len = PACKETSIZE - 16;  
-  else flags = flags | 1<<13; //fin
+  else flags = flags | 1<<5; //fin
 
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
   
   fread(buf+16, len, 1, flow->file_fd);
 
-  int n = sendto(CCP_sockfd, buf, strlen(buf), 0, 
+  int n = sendto(CCP_sockfd, buf, len+16, 0, 
 	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
   if (n < 0 )
     error("ERROR on sendto");
 
-
   flow->my_seq_n += 1;
   
   return 0;
-
 }
 
+int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
+  char buf[PACKETSIZE];
+  bzero(buf, PACKETSIZE);
 
+  uint16_t len, win_size, chk_sum;
+  uint8_t flags;
+  len = 0;
+  win_size = 0; // WINDOW SIZE
+  chk_sum = 0; // CHECK SUM
+  flags = 1<<7 | 1<<5;
+ 
+  build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
+
+  int n = sendto(CCP_sockfd, buf, 16, 0,
+		 (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
+  if( n < 0 )
+    error("ERROR on sendto");
+}
 
 
 
@@ -346,12 +382,10 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
   if(buf[strlen(buf)-1] == '\n'){
     buf[strlen(buf)-1] = 0;
   }
-
   if(strlen(buf) < 16){
     printf("Invalid CCP_header\n");
     return -1;
   }
- 
  
   memcpy(source, buf, 2);
   memcpy(dest, buf+2, 2);
@@ -364,19 +398,19 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
   
 
   //read flags
-  if(buf[12] == (char)0xC0){ // 0xC0 = 1100 0000
+  if(buf[12] == (char)0xC){ // 0xC = 1100
     *ack = 1;
     *syn = 1;
     *fin = 0;
-  }else if(buf[12] == (char)0xA0){ // 0xA0 = 1010 0000
+  }else if(buf[12] == (char)0xA0){ // 0xA = 1010
+    *ack = 1;
+    *syn = 0;
+    *fin = 1;
+  }else if(buf[12] == (char)0x80){ // 0x80 = 1000
     *ack = 1;
     *syn = 0;
     *fin = 0;
-  }else if(buf[12] == (char)0x80){ // 0x80 = 1000 0000
-    *ack = 1;
-    *syn = 0;
-    *fin = 0;
-  }else if(buf[12] == (char)0x40){ // 0x40 = 0100 0000 
+  }else if(buf[12] == (char)0x40){ // 0x40 = 0100
     *ack = 0;
     *syn = 1;
     *fin = 0;
@@ -384,7 +418,7 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
     printf("Invalid CCP header\n");
     return -1;
   }
-  strcpy(buf, buf+16);
+  memcpy(buf, buf+16, sizeof(int));
 return 0;
 }
 
@@ -395,7 +429,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
   uint8_t id;
 
-  CCP_parse_header(buf, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum. &id);
+  CCP_parse_header(buf, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum, &id);
 
   if(!ack){
     if(!syn)
@@ -408,8 +442,8 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	new->partneraddr = clientaddr;
 	new->destport = dest;
 	new->sourceport = portno;
-	new->your_seq_n = seq_n+1;
-	new->my_seq_n = rand() % 65536; // 2^16 (maximum sequence number)
+	new->your_seq_n = seq_n+1; // should be 1!
+	new->my_seq_n = 0; 
 	new->last_clock = 0;
 	new->RTTEstimate = 0;
 	new->client_fd = 0;
@@ -425,38 +459,32 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	
 	send_CCP_accept(new, CCP_sockfd);
       }
-    }  
-
+    }
   }else{//Existing Flow
     active_flow *flow = find_flow(id);
-    if( flow = NULL){
+    if( flow == NULL){
       printf("Invalid flow ID");
       return -1;
     }
-    if(seq_n != flow->your_seq_n){ //Packet lost
-      handle_packet_loss(flow, seq_n);
-    }else{
-      if(syn){ //SYN-ACK 
-	if( synchronize_seq(flow, seq_n)) //returns 1 if seq_n valid, 0 if invalid and updates flow
-	  send_HTTP_header(flow, buf); //buf = file length 
-	  send_CCP_ack(flow, CCP_sockfd);
-	else{
-	  //resend SYN
-	}
-      }else if (flow->file_fd != NULL){ // sending file
-	send_CCP_data(flow, CCP_sockfd);
-      }else{ //recieving data in buf
-	n = write( flow->clientfd, buf, strlen(buf));
-	if( n < 0)
-	  error("ERROR on write");
-	send_CCP_ack(flow, CCP_sockfd);
-	if(fin){
-	  send_CCP_ackfin(flow, CCP_sockfd);
-	  remove_flow(flow);
-	}
-      }	
+
+    if(syn){ //SYN-ACK 
+      flow->your_seq_n = seq_n; // should be 0
+      send_HTTP_header(flow, buf); //buf = file length 
+      send_CCP_ack(flow, CCP_sockfd);
+    }else if (flow->file_fd != NULL){ // sending file
+      flow->your_seq_n += 1; // increment partner sequence number
+      send_CCP_data(flow, CCP_sockfd);
+    }else{ //recieving data in buf
+      int n = write( flow->client_fd, buf, strlen(buf));
+      if( n < 0)
+	error("ERROR on write");
+      send_CCP_ack(flow, CCP_sockfd);
+      if(fin){
+	send_CCP_ackfin(flow, CCP_sockfd);
+	remove_flow(flow->id);
+      }
     }
-  
+  }
   return num_flows;
 }
 
@@ -576,13 +604,17 @@ int main(int argc, char **argv) {
 
 	}
         else if ( act_fd == CCP_sockfd ){ //Backend (CCP) Packet received
-	  bzero(buf, BUFSIZE);
+	  char CCP_buf[PACKETSIZE];
+	  bzero(CCP_buf, PACKETSIZE);
 
 	  //RTT TIMING SHOULD BE IMPLEMENTED HERE
-	  n = recvfrom(act_fd, buf, BUFSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+	  n = recvfrom(act_fd, CCP_buf, PACKETSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
 	  if (n < 0)
 	    error("ERROR in recvfrom");
-	  
+	  if (n < 16){
+	    printf("invalid CCP request");
+	    continue; // dont bother parsing
+	    }
 	  hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, 
 				sizeof(clientaddr.sin_addr.s_addr), AF_INET);
 	  if (hostp == NULL)
@@ -590,11 +622,10 @@ int main(int argc, char **argv) {
 	  hostaddrp = inet_ntoa(clientaddr.sin_addr);
 	  if (hostaddrp == NULL)
 	    error("ERROR on inet_ntoa\n");
-	  printf("server received connection request from %s (%s)\n", 
+	  printf("server received backend packet from %s (%s)\n", 
 		 hostp->h_name, hostaddrp);
-	  printf("server received %d/%d bytes: %s\n", (int)strlen(buf), n, buf);
 
-	  handle_CCP_packet(buf, clientaddr, CCP_portno, CCP_sockfd);
+	  handle_CCP_packet(CCP_buf, clientaddr, CCP_portno, CCP_sockfd);
 	
 	}else{ // act_fd is a client (i.e. GET request)
 
