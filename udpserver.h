@@ -47,11 +47,11 @@ struct content {
 
 
 /* Global - holds the files and paths */
-static content_t dictionary[BUFSIZE];
+content_t dictionary[BUFSIZE];
 int d_index;
 
 /* Global - holds list of all active CCP flows */
-static active_flow *flows[10];
+active_flow *flows[BUFSIZE];
 int num_flows;
 
 
@@ -73,9 +73,9 @@ int send_CCP_ack(active_flow *flow, int CCP_sockfd);
 int send_CCP_data(active_flow *flow, int CCP_sockfd);
 int send_CCP_ackfin(active_flow *flow, int CCP_sockfd);
 
-int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, uint16_t *ack_n, 
-		     uint16_t *len, uint16_t *win_size, uint16_t *ack, uint16_t *syn, uint16_t *fin,
-		     uint16_t *chk_sum, uint8_t *id);
+int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, 
+		     uint16_t *ack_n, uint16_t *len, uint16_t *win_size, uint16_t *ack, uint16_t *syn, 
+		     uint16_t *fin,uint16_t *chk_sum, uint8_t *id);
 
 int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd);
 

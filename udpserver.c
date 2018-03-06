@@ -17,14 +17,6 @@
 #include <time.h>
 #include "udpserver.h"
 
-/* Global - holds the files and paths */
-static content_t dictionary[BUFSIZE];
-int d_index;
-
-/* Global - holds list of all active CCP flows */
-static active_flow *flows[10];
-int num_flows;
-
 /*
  * error - wrapper for perror
  */
@@ -137,6 +129,11 @@ int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
     file_not_found();
     return -1;
   }
+  /* send 200 OK */
+  char buf[BUFSIZE];
+  sprintf(buf, "%s 200 OK\r\n", version);
+  write(connfd, buf, strlen(buf));
+  
   int result = send_CCP_request(connfd, locations[0], CCP_sockfd);
   return result;
 }
@@ -160,6 +157,7 @@ int peer_status(char *uri){
  */
 int get_request(int connfd, char *request, int CCP_sockfd)
 {
+  int closeConn = 0;
   printf("get_request: %s", request);
   
   if(strlen(request) == 0){
@@ -180,6 +178,11 @@ int get_request(int connfd, char *request, int CCP_sockfd)
 
   printf("%s, %s\n", uri,  version);
 
+
+  if( strstr(request, "keep-alive") == NULL ){
+    closeConn = 1;
+  }
+
   if (strstr(uri, "add")){
     result = peer_add(connfd, uri, version);
     close(connfd);
@@ -194,9 +197,10 @@ int get_request(int connfd, char *request, int CCP_sockfd)
     result = peer_status(uri);
   }
   else { /*not a valid get request*/
-    result =  -1;
+    printf("Invalid GET");
+    return -1;
   }
-  return result;
+  return closeConn;
 } 
 
 //Returns active flow struct on sucess, NULL on failure
@@ -264,13 +268,13 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
 
   af = (active_flow *)malloc(sizeof(active_flow));
   
-  memcpy(&(af->destport), file->port, 2);
+  af->destport = atoi(file->port);
 
   af->my_seq_n = 0;
   af->client_fd = connfd;
 
 
-  printf("\n%s\n", file->host);
+  printf("\n%s:%d\n", file->host, af->destport);
 
   struct hostent *server = gethostbyname(file->host);
   if(server == NULL){
@@ -281,7 +285,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   partneraddr.sin_family = AF_INET;
   bcopy((char *)server->h_addr,
 	(char *)&partneraddr.sin_addr.s_addr, server->h_length);
-  partneraddr.sin_port = htons((unsigned short)file->port);
+  partneraddr.sin_port = htons((unsigned short)af->destport);
 
   af->partneraddr = partneraddr;
   
@@ -302,7 +306,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   int serverlen = sizeof(partneraddr);
   n = sendto(CCP_sockfd, buf, len+16, 0, &partneraddr, serverlen);
   if (n< 0)
-    error("THAT SHIT DIDNT WORK\n"); 
+    error("THAT SHIT DIDNT WORK"); 
   
   af->my_seq_n += 1;
   flows[num_flows] = af;
@@ -433,17 +437,9 @@ int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
 
 
 // Fills header values and puts data in buf, returns -1 on failure
-int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, 
+int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, 
 		     uint16_t *ack_n, uint16_t *len, uint16_t *win_size, uint16_t *ack, uint16_t *syn,
 		     uint16_t *fin, uint16_t *chk_sum, uint8_t *id){
-
-  if(buf[strlen(buf)-1] == '\n'){
-    buf[strlen(buf)-1] = 0;
-  }
-  if(strlen(buf) < 16){
-    printf("Invalid CCP_header\n");
-    return -1;
-  }
  
   memcpy(source, buf, 2);
   memcpy(dest, buf+2, 2);
@@ -456,11 +452,11 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
   
 
   //read flags
-  if(buf[12] == (char)0xC){ // 0xC = 1100
+  if(buf[12] == (char)0xC0){ // 0xC0 = 1100
     *ack = 1;
     *syn = 1;
     *fin = 0;
-  }else if(buf[12] == (char)0xA0){ // 0xA = 1010
+  }else if(buf[12] == (char)0xA0){ // 0xA0 = 1010
     *ack = 1;
     *syn = 0;
     *fin = 1;
@@ -473,10 +469,14 @@ int CCP_parse_header(char buf[], uint16_t *source, uint16_t *dest, uint16_t *seq
     *syn = 1;
     *fin = 0;
   }else{
+    printf("%x, %c, %c\n", buf[12], buf[12], (char)0x40);
     printf("Invalid CCP header\n");
     return -1;
   }
-  memcpy(buf, buf+16, sizeof(int));
+
+  memcpy(data, buf+16, *len);
+  data[*len] = '\0';
+
 return 0;
 }
 
@@ -486,15 +486,21 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
   uint8_t id;
+  char data[PACKETSIZE];
+  
 
-  CCP_parse_header(buf, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum, &id);
+
+  printf("Beggining parse_header...\n");
+  CCP_parse_header(buf, data, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum, &id);
+  printf("...parse_header complete");
 
   if(!ack){
     if(!syn)
       printf("Invalid CCP Header");
     else{// new flow
-      if(strlen(buf) == 0) printf("Empty CCP request"); // buf contains file request
+      if(strlen(data) == 0) printf("Empty CCP request"); // data contains file request
       else{
+	printf("CCP file:%s \n", data);
 	//create new active flow
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
@@ -505,7 +511,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	new->last_clock = 0;
 	new->RTTEstimate = 0;
 	new->client_fd = 0;
-        new->file_fd = fopen(buf, "r");
+        new->file_fd = fopen(data, "r");
 	new->id = id;
 	if( new->file_fd == NULL){ // could not locate file
 	  printf("CCP requested a file that does not exist");
@@ -519,6 +525,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       }
     }
   }else{//Existing Flow
+    printf("file size: %d", (int)data);
     active_flow *flow = find_flow(id);
     if( flow == NULL){
       printf("Invalid flow ID");
@@ -554,9 +561,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 int send_HTTP_header(active_flow *flow, uint64_t file_length)
 {
   char buf[BUFSIZE];
-  /* send 200 OK */
-  sprintf(buf, "%s 200 OK\r\n", flow->version);
-  sprintf(buf, "%sContent-type: %s\r\n", buf, find_type(flow->file_name)); 
+  sprintf(buf, "Content-type: %s\r\n", find_type(flow->file_name)); 
   sprintf(buf, "%sContent-length: %llu\r\n",buf, (uint64_t)file_length);
   sprintf(buf, "%s%s\r\n", buf, print_time());
   sprintf(buf, "%sConnection: Keep-Alive\r\n", buf);
@@ -695,6 +700,13 @@ int main(int argc, char **argv) {
   clientlen = sizeof(clientaddr);
   while (1) {
 
+    printf("\n\n CURRENT FILE TABLE (d_index: %d): \n", d_index);
+    int i;
+    for(i = 0; i < d_index; i++){
+      printf("file: %s, host:, %s, port: %s\n", dictionary[i]->file,dictionary[i]->host,
+	     dictionary[i]->port);
+    }
+
     read_fds = active_fds;
     if( select( FD_SETSIZE, &read_fds, NULL, NULL, NULL) <0 )
       error("ERROR on select");
@@ -727,6 +739,7 @@ int main(int argc, char **argv) {
 
 	}
         else if ( act_fd == CCP_sockfd ){ //Backend (CCP) Packet received
+	  printf("\n\n\n\nIS ANYTHING GOING TO WORK?\n\n\n\n");
 	  char CCP_buf[PACKETSIZE];
 	  bzero(CCP_buf, PACKETSIZE);
 
@@ -736,7 +749,7 @@ int main(int argc, char **argv) {
 	  if (n < 0)
 	    error("ERROR in recvfrom");
 	  if (n < 16){
-	    printf("invalid CCP request");
+	    printf("Invalid CCP request");
 	    continue; // dont bother parsing
 	    }
 	  hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, 
@@ -759,11 +772,15 @@ int main(int argc, char **argv) {
 	  if ( n < 0)
 	    error("ERROR reading from client");
 
+	  int closeConn = 0;
 	  if(strlen(buf) != 0){
-	    get_request(act_fd, buf, CCP_sockfd);
+	    closeConn = get_request(act_fd, buf, CCP_sockfd);
 	  }
-	  //close(act_fd);
-	  //FD_CLR(act_fd, &active_fds);
+	  if(closeConn){
+	    printf("\n\n CLOSING CONNECTION: %d \n\n", act_fd);
+	    close(act_fd);
+	    FD_CLR(act_fd, &active_fds);
+	  }
 	}
       }
     }
