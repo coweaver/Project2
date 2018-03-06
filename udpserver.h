@@ -47,12 +47,13 @@ struct content {
 
 
 /* Global - holds the files and paths */
-content_t dictionary[BUFSIZE];
+static content_t dictionary[BUFSIZE];
 int d_index;
 
 /* Global - holds list of all active CCP flows */
-active_flow *flows[10];
+static active_flow *flows[10];
 int num_flows;
+
 
 
 void error(char *msg);

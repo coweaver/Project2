@@ -17,6 +17,14 @@
 #include <time.h>
 #include "udpserver.h"
 
+/* Global - holds the files and paths */
+static content_t dictionary[BUFSIZE];
+int d_index;
+
+/* Global - holds list of all active CCP flows */
+static active_flow *flows[10];
+int num_flows;
+
 /*
  * error - wrapper for perror
  */
@@ -34,9 +42,15 @@ int file_not_found(){
 int peer_add(int connfd, char *request, char *version)
 {
   printf("Starting peer_add: %s\n", request); 
-  char *temp, key[100], val[100], buf[BUFSIZE], file[100], host[100], port[100], rate[100];
+  char *temp, key[100], val[100], buf[BUFSIZE], *file, *host, *port, *rate;
   int n;
  
+
+  file = (char *)malloc(100);
+  host = (char *)malloc(100);
+  port = (char *)malloc(100);
+  rate = (char *)malloc(100);
+
   bzero(key, 100);
   bzero(val, 100);
 
@@ -73,11 +87,15 @@ int peer_add(int connfd, char *request, char *version)
 
   dictionary[d_index] = (content_t)malloc(sizeof(struct content));
 
+  printf("copying strings\n");
+
   dictionary[d_index]->file = file;
   dictionary[d_index]->host = host;
-  dictionary[d_index]->port = port;
+  dictionary[d_index]->port =  port;
   dictionary[d_index]->brate = rate;
   d_index++; 
+
+  printf("done\n");
 
   sprintf(buf, "%s 200 OK \r\n file: %s\n host: %s\n port: %s\n brate: %s\n", version, file, host, port, rate); 
 
@@ -85,7 +103,7 @@ int peer_add(int connfd, char *request, char *version)
     error("ERROR on write");
     
 
-  printf("\n\nfile: %s is located at %s:%s\n\n", dictionary[d_index-1]->file, dictionary[d_index-1]->host, dictionary[d_index-1]->port); 
+
   return 0;
 }
 
@@ -93,19 +111,19 @@ int peer_add(int connfd, char *request, char *version)
 
 int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
 {
-  char *file;
+  char file[BUFSIZE];
   int i, found=0, loc_index=0;
   content_t locations[BUFSIZE]; /* holds all of the content structs of the requested uri */
 
-  printf("We are in peer_view:\n");
+  printf("We are in peer_view: %s\n", request);
 
-  strtok(request, "view/");
-  file = strtok(NULL, " ");
+  sscanf(request, "/peer/view/%s", file);
   /* search dictionary for file */
-
+  printf("%d, \n", d_index);
   for (i=0; i<d_index; i++)
     {
       printf("looking for %s in dictionary, %d\n", file, i);
+      printf("Current: %s\n", dictionary[i]->file);
       if (strcmp(file, dictionary[i]->file) == 0) {/* file found */
 	found = 1;
 	locations[loc_index] = dictionary[i];
@@ -143,6 +161,16 @@ int peer_status(char *uri){
 int get_request(int connfd, char *request, int CCP_sockfd)
 {
   printf("get_request: %s", request);
+  
+  if(strlen(request) == 0){
+    printf("Pussy HTTP request");
+    return -1;
+  }
+
+
+  if(d_index != 0)
+      printf("\n\nfile: %s is located at %s:%s\n\n", dictionary[d_index-1]->file, dictionary[d_index-1]->host, dictionary[d_index-1]->port); 
+
   char *uri, *version;
   int result;
 
@@ -154,6 +182,7 @@ int get_request(int connfd, char *request, int CCP_sockfd)
 
   if (strstr(uri, "add")){
     result = peer_add(connfd, uri, version);
+    close(connfd);
   } 
   else if (strstr(uri, "view")) {
     result = peer_view(connfd, uri, version, CCP_sockfd);
@@ -231,6 +260,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   active_flow *af;
   struct sockaddr_in partneraddr;
 
+  printf("\n\n\nStarting send_CCP_request\n\n\n");
 
   af = (active_flow *)malloc(sizeof(active_flow));
   
@@ -239,32 +269,45 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   af->my_seq_n = 0;
   af->client_fd = connfd;
 
+
+  printf("\n%s\n", file->host);
+
+  struct hostent *server = gethostbyname(file->host);
+  if(server == NULL){
+    fprintf(stderr, "ERROR, no such host as %s\n", file->host);
+    exit(0);
+  }
   bzero((char *) &partneraddr, sizeof(partneraddr));
   partneraddr.sin_family = AF_INET;
-  partneraddr.sin_addr.s_addr = htonl(INADDR_ANY);
+  bcopy((char *)server->h_addr,
+	(char *)&partneraddr.sin_addr.s_addr, server->h_length);
   partneraddr.sin_port = htons((unsigned short)file->port);
 
   af->partneraddr = partneraddr;
-
+  
   uint16_t len, win_size,  chk_sum;
   uint8_t flags;
   win_size = 0; // WINDOW SIZE
   chk_sum = 0; //CHECK SUM
   flags = 1<<6; // SYN
   len = strlen(file->file);
-
+  
   build_CCP_header(buf, af, &len, &win_size, &flags, &chk_sum);
   memcpy(buf+16, file->file, strlen(file->file));
-
+  
   af->last_clock = clock();
-  n = sendto(CCP_sockfd, buf, len+16, 0, 
-	     (struct sockaddr *) &af->partneraddr, sizeof(af->partneraddr));
+  
+  printf("flow created, about to send, sock: %d\n", CCP_sockfd);
+  
+  int serverlen = sizeof(partneraddr);
+  n = sendto(CCP_sockfd, buf, len+16, 0, &partneraddr, serverlen);
   if (n< 0)
     error("THAT SHIT DIDNT WORK\n"); 
   
   af->my_seq_n += 1;
   flows[num_flows] = af;
   num_flows += 1;
+  printf("sent, data sent: %dbytes, num_flows:%d\n\n", n, num_flows); 
   return n;
 }
 
@@ -487,8 +530,12 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       send_HTTP_header(flow, *((uint64_t *)buf)); //buf = file length 
       send_CCP_ack(flow, CCP_sockfd);
     }else if (flow->file_fd != NULL){ // sending file
-      flow->your_seq_n += 1; // increment partner sequence number
-      send_CCP_data(flow, CCP_sockfd);
+      if(fin) 
+	remove_flow(flow->id);
+      else{
+	flow->your_seq_n += 1; // increment partner sequence number
+	send_CCP_data(flow, CCP_sockfd);
+      }
     }else{ //recieving data in buf
       int n = write( flow->client_fd, buf, strlen(buf));
       if( n < 0)
@@ -676,7 +723,7 @@ int main(int argc, char **argv) {
 	  
 	  FD_SET(connfd, &active_fds);
 
-	  printf("Connection created.\n");
+	  printf("Connection created: %d\n", connfd);
 
 	}
         else if ( act_fd == CCP_sockfd ){ //Backend (CCP) Packet received
@@ -684,7 +731,8 @@ int main(int argc, char **argv) {
 	  bzero(CCP_buf, PACKETSIZE);
 
 	  //RTT TIMING SHOULD BE IMPLEMENTED HERE
-	  n = recvfrom(act_fd, CCP_buf, PACKETSIZE, 0, (struct sockaddr *) &clientaddr, &clientlen);
+	  n = recvfrom(act_fd, CCP_buf, PACKETSIZE, 0, 
+		       (struct sockaddr *) &clientaddr, &clientlen);
 	  if (n < 0)
 	    error("ERROR in recvfrom");
 	  if (n < 16){
@@ -710,11 +758,12 @@ int main(int argc, char **argv) {
 	  n = read(act_fd, buf, BUFSIZE);
 	  if ( n < 0)
 	    error("ERROR reading from client");
-	  
-	  get_request(act_fd, buf, CCP_sockfd);
-	  
-	  close(act_fd);
-	  FD_CLR(act_fd, &active_fds);
+
+	  if(strlen(buf) != 0){
+	    get_request(act_fd, buf, CCP_sockfd);
+	  }
+	  //close(act_fd);
+	  //FD_CLR(act_fd, &active_fds);
 	}
       }
     }
