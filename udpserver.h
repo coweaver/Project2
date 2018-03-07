@@ -30,6 +30,7 @@ typedef struct active_flow {
   clock_t last_clock;
   int RTTEstimate;
   FILE *file_fd;
+  uint64_t file_len;
   int client_fd;
   char *version;
   char *file_name;
@@ -91,7 +92,7 @@ int handle_packet_loss(active_flow *flow, uint16_t seq_n);
 
 int synchronize_seq(active_flow *flow, uint16_t seq_n);
 
-int send_HTTP_header(active_flow *flow, uint64_t file_length);
+int send_HTTP_header(active_flow *flow);
 
 char *print_time();
 
