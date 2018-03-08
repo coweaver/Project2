@@ -17,7 +17,7 @@
 
 #define BUFSIZE 1024
 #define PACKETSIZE 1500
-
+#define MAX_WINSIZE 65535 //2^16-1
 
 typedef struct active_flow {
   uint8_t id;
@@ -27,6 +27,7 @@ typedef struct active_flow {
   uint16_t sourceport;
   uint16_t my_seq_n;
   uint16_t your_seq_n;
+  uint16_t window_size;
   clock_t last_clock;
   int RTTEstimate;
   FILE *file_fd;
