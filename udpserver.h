@@ -34,6 +34,7 @@ typedef struct active_flow {
   int client_fd;
   char *version;
   char *file_name;
+  uint16_t max_window;
 } active_flow;
 
 
