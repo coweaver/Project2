@@ -26,14 +26,18 @@ void error(char *msg) {
 }
 
 
-int file_not_found(){
-  printf("File Not Found \n");
-  return 0;
+int file_not_found(int connfd){
+  char buf[BUFSIZE];
+  sprintf(buf, "HTTP/1.1 404 Not Found\r\nConnection: Close\r\n\r\n404 File not found");
+  int n = write(connfd, buf, strlen(buf));
+  if (n < 0) 
+    error("ERROR writing to socket");
+  return 1;  
 }
 
 int peer_add(int connfd, char *request, char *version)
 {
-  printf("Starting peer_add: %s\n", request); 
+  //  printf("Starting peer_add: %s\n", request); 
   char *temp, key[100], val[100], buf[BUFSIZE], *file, *host, *port, *rate;
   int n;
  
@@ -43,6 +47,10 @@ int peer_add(int connfd, char *request, char *version)
   port = (char *)malloc(100);
   rate = (char *)malloc(100);
 
+  if( strstr(request, "rate") == NULL ){
+    rate = "";
+  }
+
   bzero(key, 100);
   bzero(val, 100);
 
@@ -51,7 +59,7 @@ int peer_add(int connfd, char *request, char *version)
   while(temp){
     sscanf(temp, "%[^=]=%s", key, val);
     if(strcmp(key, "") == 0){
-      printf("Invalid GET request\n");
+      //printf("Invalid GET request\n");
       return -1;
     }      
     if(strcmp(key, "path")==0)
@@ -67,13 +75,13 @@ int peer_add(int connfd, char *request, char *version)
   }    
     
   if(strcmp(file,  "")==0){
-    printf("No file path found\n");
+    //printf("No file path found\n");
     return -1;
   }else if(strcmp(host, "")==0){
-    printf("No host found\n");
+    //printf("No host found\n");
     return -1;
   }else if(strcmp(port,"")==0){
-    printf("No port found\n");
+    //printf("No port found\n");
     return -1;
   }
 
@@ -85,8 +93,9 @@ int peer_add(int connfd, char *request, char *version)
   dictionary[d_index]->brate = rate;
   d_index++; 
 
-  sprintf(buf, "%s 200 OK \r\n file: %s\n host: %s\n port: %s\n brate: %s\n", version, file, host, port, rate); 
+  sprintf(buf, "%s 200 OK \r\n\r\n", version); 
 
+  //  printf("connfd: %d\n", connfd);
   if ((n = write(connfd, buf, strlen(buf))) < 0)
     error("ERROR on write");
     
@@ -101,48 +110,85 @@ int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
   int i, found=0, loc_index=0;
   content_t locations[BUFSIZE]; /* holds all of the content structs of the requested uri */
 
-  printf("We are in peer_view: %s\n", request);
+  //printf("We are in peer_view: %s\n", request);
 
   sscanf(request, "/peer/view/%s", file);
   /* search dictionary for file */
-  printf("%d, \n", d_index);
+  //printf("%d, \n", d_index);
   for (i=0; i<d_index; i++)
     {
-      printf("looking for %s in dictionary, %d\n", file, i);
-      printf("Current: %s\n", dictionary[i]->file);
+      //printf("looking for %s in dictionary, %d\n", file, i);
+      //printf("Current: %s\n", dictionary[i]->file);
       if (strcmp(file, dictionary[i]->file) == 0) {/* file found */
+	//printf("found\n");
 	found = 1;
 	locations[loc_index] = dictionary[i];
 	loc_index++;
       }
     }    
   
-  printf("Our file is: %s, our host is: %s\n", locations[0]->file, locations[0]->host);
+  //  printf("Our file is: %s, our host is: %s\n", locations[0]->file, locations[0]->host);
 
   if (!found) { 
-    file_not_found();
+    file_not_found(connfd);
     return -1;
   }
   /* send 200 OK */
   char buf[BUFSIZE];
   sprintf(buf, "%s 200 OK\r\n", version);
-  write(connfd, buf, strlen(buf));
-  
+  int n = write(connfd, buf, strlen(buf));
+  if(n < 0){
+    error("ERROR on write");
+  }
   int result = send_CCP_request(connfd, locations[0], CCP_sockfd);
   return result;
 }
 
-int peer_config(int connfd, char *request, char *version)
+int peer_config(char *uri)
 {
-  char *rate;
+  uint16_t max_brate;
   
-  strtok(request, "rate=");
-  rate = strtok(NULL, " ");
+  strtok(uri, "rate=");
+  max_brate = (uint16_t)atoi(strtok(NULL, " "));
+  global_bit_rate = max_brate;
   return 0;
 }
 
 
-int peer_status(char *uri){
+int peer_status(int connfd, char *version){
+  char buf[BUFSIZE];
+  char data[BUFSIZE];
+  
+  sprintf(data, "CURRENT FLOWS (num_flows: %d): \n",  num_flows);
+  int i;
+  unsigned long long percent = 0;
+  char *type; 
+  for(i = 0; i < num_flows; i++){
+    if(flows[i]->file_fd != NULL){
+      type = "Sending";
+      percent = (ftell(flows[i]->file_fd)*100)/flows[i]->file_len;
+    }else{
+      type = "Receiving";
+      percent = (flows[i]->received * 100)/ flows[i]->file_len;
+    }
+    sprintf(data, "%sAction: %s, Flow ID: %d, Client: %d, %s : %llu%% complete. \n", data, type, flows[i]->id,flows[i]->client_fd,
+	   flows[i]->file_name, percent);
+  }
+
+  sprintf(buf, "%s 200 OK\r\n", version);
+  sprintf(buf, "%sContent-type: text/plain\r\n", buf);
+  sprintf(buf, "%sContent-length: %lu\r\n", buf, strlen(data));
+  sprintf(buf, "%s%s\r\n", buf, print_time());
+  sprintf(buf, "%sConnection: Keep-Alive\r\n", buf);
+  sprintf(buf, "%sAccept-Ranges: bytes\r\n\r\n", buf);
+
+  sprintf(buf, "%s%s", buf, data);
+  
+  int n = write(connfd, buf, strlen(buf));
+  if(n < 0){
+    error("ERROR on write");
+  }
+ 
   return 0;
 }
 
@@ -152,10 +198,10 @@ int peer_status(char *uri){
 int get_request(int connfd, char *request, int CCP_sockfd)
 {
   int closeConn = 0;
-  printf("get_request: %s", request);
+  //printf("get_request: %s", request);
   
   if(strlen(request) == 0){
-    printf("Pussy HTTP request");
+    //printf("Pussy HTTP request");
     return -1;
   }
 
@@ -164,15 +210,17 @@ int get_request(int connfd, char *request, int CCP_sockfd)
 
 
   if( (strstr(request, "keep-alive") == NULL) ){
-    printf("No keep-alive\n");
+    //printf("No keep-alive\n");
     closeConn = 1;
   }
+  else
+    //printf("KEEP ALIVE\n");
 
   strtok(request, " ");
   uri = strtok(NULL, " ");
   version = strtok(NULL, "\r\n");
 
-  printf("%s, %s\n", uri,  version);
+  //printf("%s, %s\n", uri,  version);
 
 
   if (strstr(uri, "add")){
@@ -184,13 +232,13 @@ int get_request(int connfd, char *request, int CCP_sockfd)
     peer_view(connfd, uri, version, CCP_sockfd);
   }
   else if (strstr(uri, "config")) {
-    peer_config(connfd, uri, version);
+    peer_config(uri);
   }
   else if (strstr(uri, "status")) {
-    peer_status(uri);
+    peer_status(connfd, version);
   }
   else { /*not a valid get request*/
-    printf("Invalid GET");
+    //printf("Invalid GET");
     return -1;
   }
   return closeConn;
@@ -220,7 +268,7 @@ int remove_flow(uint8_t id){
     }
   }
   if(!found){
-    printf("not a valid flow id");
+    //printf("not a valid flow id");
     return -1;
   }
   free(flow);
@@ -254,7 +302,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   active_flow *af;
   struct sockaddr_in partneraddr;
 
-  printf("\n\n\nStarting send_CCP_request\n\n\n");
+  //printf("\n\n\nStarting send_CCP_request\n\n\n");
 
   af = (active_flow *)malloc(sizeof(active_flow));
   
@@ -263,11 +311,16 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   af->my_seq_n = 0;
   af->client_fd = connfd;
   af->file_fd = NULL;
+  af->received = 0;
+  //  printf("\n%s:%d\n", file->host, af->destport);
 
-  printf("\n%s:%d\n", file->host, af->destport);
-
-  uint16_t brate = atoi(file->brate);
-
+  uint16_t brate;
+  if( strlen(file->brate) == 0 )
+    brate = 60000;
+  else
+    brate = atoi(file->brate);
+  
+  
 
   struct hostent *server = gethostbyname(file->host);
   if(server == NULL){
@@ -280,25 +333,25 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
 	(char *)&partneraddr.sin_addr.s_addr, server->h_length);
   partneraddr.sin_port = htons((unsigned short)af->destport);
 
-  af->id = rand() % 10;
+  af->id = rand() % 100;
 
   af->partneraddr = partneraddr;
+  af->max_window = 0;
   
   uint16_t len, win_size,  chk_sum;
   uint8_t flags;
-  win_size = 0; // WINDOW SIZE
+  win_size = af->max_window;
   chk_sum = 0; //CHECK SUM
   flags = 1<<6; // SYN
   len = strlen(file->file);
   
   build_CCP_header(buf, af, &len, &win_size, &flags, &chk_sum);
   memcpy(buf+16, file->file, strlen(file->file));
-  
-  af->last_clock = clock();
-  
-  printf("flow created, about to send, sock: %d\n", CCP_sockfd);
+ 
+  //printf("flow created, about to send, sock: %d\n", CCP_sockfd);
   
   int serverlen = sizeof(partneraddr);
+  af->start = clock();
   n = sendto(CCP_sockfd, buf, len+16, 0, &partneraddr, serverlen);
   if (n< 0)
     error("THAT SHIT DIDNT WORK"); 
@@ -306,10 +359,16 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   af->my_seq_n += 1;
   flows[num_flows] = af;
   num_flows += 1;
-  printf("sent, data sent: %dbytes, num_flows:%d\n\n", n, num_flows); 
+  //printf("sent, data sent: %dbytes, num_flows:%d\n\n", n, num_flows); 
   return n;
 }
 
+
+uint16_t calc_window(active_flow *flow){
+  uint16_t brate = ( ( flow->brate < global_bit_rate ) ? flow->brate : global_bit_rate );
+  uint16_t window = (brate * flow->RTT) / (PACKETSIZE - 16);
+  return window;
+}
 
 
 int send_CCP_accept(active_flow *flow, int CCP_sockfd){
@@ -321,11 +380,12 @@ int send_CCP_accept(active_flow *flow, int CCP_sockfd){
   fseek(flow->file_fd, 0, SEEK_END);
   uint64_t size = ftell(flow->file_fd);
   rewind(flow->file_fd);
-  
+  flow->file_len = size;
+
   uint16_t len, win_size, chk_sum;
   uint8_t  flags;
   len = sizeof(uint64_t);
-  win_size = 0; // WINDOW SIZE()
+  win_size = flow->window_size; // WINDOW SIZE()
   chk_sum = 0; // CHECKSUM()
   flags = 1<<7 | 1<<6;
   
@@ -349,13 +409,14 @@ int send_CCP_accept(active_flow *flow, int CCP_sockfd){
 
 
 int send_CCP_ack(active_flow *flow, int CCP_sockfd){
+  //printf("SEND CCP ACK\n"); 
   char buf[PACKETSIZE];
   bzero(buf, PACKETSIZE);
 
   uint16_t len, win_size, chk_sum;
   uint8_t flags;
   len = 0;
-  win_size = 0; //WINDOW SIZE
+  win_size = flow->window_size; //WINDOW SIZE
   chk_sum = 0; // CHECK SUM
   flags = 1<<7; // ACK
   
@@ -375,63 +436,69 @@ int send_CCP_ack(active_flow *flow, int CCP_sockfd){
 
 
 int send_CCP_data(active_flow *flow, int CCP_sockfd){
+  //printf("\n\nSEND CCP DATA\n\n");
   char buf[PACKETSIZE];
   bzero(buf, PACKETSIZE);
 
   uint16_t len, win_size, chk_sum;
   uint8_t flags;
-  win_size = 0; // WINDOW SIZE
+  win_size = flow->max_window; // WINDOW SIZE
   chk_sum = 0; // CHECK SUM
   flags = 1<<7;
 
   unsigned long temp_len;
   fpos_t curr;
 
-  printf("Calculating Length...\n");
+  //  printf("window_size: %d, window_used: %d, max_window: %d\n", flow->window_size, flow->window_used, flow->max_window);
 
-  fgetpos(flow->file_fd, &curr);
+  //need case for looping back in case packets are dropped
 
-  temp_len = ftell(flow->file_fd);
-  printf("sending byte: %lu\n", temp_len);
-  fseek(flow->file_fd, 0, SEEK_END); 
-  temp_len = ftell(flow->file_fd) - temp_len;; 
+  for (int i=flow->window_used; i<flow->window_size; i++){
+    //printf("Calculating Length...\n");
+    fgetpos(flow->file_fd, &curr);
+    temp_len = ftell(flow->file_fd);
+    //printf("sending byte: %lu, seq_n: %d\n", temp_len, flow->my_seq_n);
+    fseek(flow->file_fd, 0, SEEK_END); 
+    temp_len = ftell(flow->file_fd) - temp_len;; 
+    fsetpos(flow->file_fd, &curr);
+    //printf("done.\n");
 
-  fsetpos(flow->file_fd, &curr);
+    if(temp_len == 0) break;
 
-  printf("done.\n");
+    if(temp_len > PACKETSIZE - 16) len = PACKETSIZE - 16;  
+    else{
+      //printf("\nSENDING FIN\n");
+      len = (uint16_t)temp_len;
+      flags = flags | 1<<5; //fin
+    }
 
-
-
-  if(temp_len > PACKETSIZE - 16) len = PACKETSIZE - 16;  
-  else{
-    printf("\nSENDING FIN\n");
-    len = (uint16_t)temp_len;
-    flags = flags | 1<<5; //fin
+    build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
+ 
+    fread(buf+16, len, 1, flow->file_fd);
+    int n = sendto(CCP_sockfd, buf, len+16, 0, 
+	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
+    if (n < 0 )
+      error("ERROR on sendto");
+    
+    flow->my_seq_n += 1;
+    flow->window_used += 1;
   }
 
-  build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
-
-  fread(buf+16, len, 1, flow->file_fd);
-
-  int n = sendto(CCP_sockfd, buf, len+16, 0, 
-	     (struct sockaddr *) &(flow->partneraddr), sizeof(flow->partneraddr)); 
-  if (n < 0 )
-    error("ERROR on sendto");
-  flow->my_seq_n += 1;  
   return 0;
 }
 
 
 int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
+  //printf("SEND CCP ACKFIN\n\n");
   char buf[PACKETSIZE];
   bzero(buf, PACKETSIZE);
 
   uint16_t len, win_size, chk_sum;
   uint8_t flags;
   len = 0;
-  win_size = 0; // WINDOW SIZE
+  win_size = flow->max_window; // WINDOW SIZE
   chk_sum = 0; // CHECK SUM
-  flags = 1<<7 | 1<<5;
+  flags = 1<<7 | 1<<5; // ack-fin
  
   build_CCP_header(buf, flow, &len, &win_size, &flags, &chk_sum);
 
@@ -449,7 +516,9 @@ int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
 int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, uint16_t *seq_n, 
 		     uint16_t *ack_n, uint16_t *len, uint16_t *win_size, uint16_t *ack, uint16_t *syn,
 		     uint16_t *fin, uint16_t *chk_sum, uint8_t *id){
- 
+  
+ // printf("PARSE HEADER\n\n");
+
   memcpy(source, buf, 2);
   memcpy(dest, buf+2, 2);
   memcpy(seq_n, buf+4, 2);
@@ -462,31 +531,34 @@ int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, 
 
   //read flags
   if(buf[12] == (char)0xC0){ // 0xC0 = 1100
+    //printf("ACK SYN\n");
     *ack = 1;
     *syn = 1;
     *fin = 0;
   }else if(buf[12] == (char)0xA0){ // 0xA0 = 1010
+    //printf("ACK FIN\n");
     *ack = 1;
     *syn = 0;
     *fin = 1;
   }else if(buf[12] == (char)0x80){ // 0x80 = 1000
+    //printf("ACK\n");
     *ack = 1;
     *syn = 0;
     *fin = 0;
   }else if(buf[12] == (char)0x40){ // 0x40 = 0100
+    //printf("SYN\n");
     *ack = 0;
     *syn = 1;
     *fin = 0;
   }else{
-    printf("%x, %c, %c\n", buf[12], buf[12], (char)0x40);
-    printf("Invalid CCP header\n");
+    //printf("%x, %c, %c\n", buf[12], buf[12], (char)0x40);
+    //printf("Invalid CCP header\n");
     return -1;
   }
 
-
   memcpy(data, buf+16, *len);
   data[*len] = '\0';
-
+  
 
 return 0;
 }
@@ -494,24 +566,20 @@ return 0;
 
 
 int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int CCP_sockfd){
-
+  uint64_t end = clock();
   uint16_t source, dest, seq_n, ack_n, len, win_size, ack, syn, fin, chk_sum;
   uint8_t id;
   char data[PACKETSIZE];
-  
-
-
 
   CCP_parse_header(buf, data, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum, &id);
 
-
   if(!ack){
-    if(!syn)
-      printf("Invalid CCP Header");
-    else{// new flow
-      if(strlen(data) == 0) printf("Empty CCP request"); // data contains file request
+    if(syn){
+      //printf("NEW FLOW: %d\n", id);
+      if(find_flow(id) != NULL) printf("Repeated flow ID\n"); //Invalid flow ID
+      else if(strlen(data) == 0) printf("Empty CCP request\n"); // data contains file request
       else{
-	printf("CCP file: %s \n", data);
+	//printf("CCP file: %s \n", data);
 	//create new active flow
 	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
@@ -519,11 +587,14 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 	new->sourceport = portno;
 	new->your_seq_n = seq_n+1; // should be 1!
 	new->my_seq_n = 0; 
-	new->last_clock = 0;
-	new->RTTEstimate = 0;
+	new->start = 0;
+	new->RTT = 0;
 	new->client_fd = 0;
         new->file_fd = fopen(data, "r");
 	new->id = id;
+	new->window_size = 2; //start at window size of 2
+	new->max_window = win_size;
+	new->window_used = 0;
 	if( new->file_fd == NULL){ // could not locate file
 	  printf("CCP requested a file that does not exist");
 	  return -1;
@@ -536,38 +607,94 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       }
     }
   }else{//Existing Flow
+   // printf("EXISTING FLOW \n");
     active_flow *flow = find_flow(id);
     if( flow == NULL){
-      printf("Invalid flow ID");
+      printf("Invalid flow ID\n");
       return -1;
     }
-    printf("Flow ID: %d, Seq_n: %d\n", id, seq_n);
+    //    printf("Flow ID: %d, Seq_n: %d\n", id, seq_n);
+
 
     if(syn){ //SYN-ACK 
-      printf("Recieved SYN-ACK\n");
+      //printf("Recieved SYN-ACK\n");
+      flow->RTT = (end-flow->start)/1000;
+
+      flow->max_window = calc_window(flow); 
+
       flow->your_seq_n = seq_n+1; // should be 1
       flow->file_len = *((uint64_t *)data);
       send_HTTP_header(flow); //buf = file length
       send_CCP_ack(flow, CCP_sockfd);
     }else if (flow->file_fd != NULL){ // sending file
-      if(fin) 
+
+      if (flow->your_seq_n != seq_n){
+	//printf("\nERROR PACKET DROPPED: Expected: %d, recieved: %d\n", flow->your_seq_n, seq_n);
+	
+	flow->your_seq_n = seq_n+1;
+	
+	int diff = ack_n - flow->my_seq_n;
+	//	printf("me: %d, needed: %d, diff: %d", flow->my_seq_n, ack_n, diff);
+	flow->my_seq_n = ack_n;
+	fseek(flow->file_fd, diff * (PACKETSIZE - 16), SEEK_CUR);
+	flow->window_size = flow->window_size / 2 + 1;
+	flow->window_used = 0;
+	send_CCP_data(flow, CCP_sockfd);
+	return -1;
+      }
+      
+      //      printf("SENDING FILE \n");
+      if( flow->window_used > 0)  flow->window_used -= 1;
+      if (flow->window_size <= win_size)
+	flow->window_size+=1;
+
+      if(fin){ 
+	//printf("REMOVE FLOW: %d\n", flow->id);
 	remove_flow(flow->id);
-      else{
+      }else{
 	flow->your_seq_n += 1; // increment partner sequence number
 	send_CCP_data(flow, CCP_sockfd);
       }
     }else{ //recieving data
-      flow->your_seq_n += 1;
-      int n = write( flow->client_fd, data, len);
-      if( n < 0)
+      //printf("receiving data\n");
+
+      if (flow->error){
+	if ( flow->your_seq_n != seq_n ){
+	  return -1;
+	}
+	flow->error = 0;
+      }
+
+      //      printf("%d\n", seq_n);
+      if (flow->your_seq_n != seq_n){ //PACKET LOST --
+	//printf("\nERROR PACKET DROPPED: Expected: %d, recieved: %d\n", flow->your_seq_n, seq_n);
+	flow->error = 1;
+	flow->my_seq_n -= 1;
+	send_CCP_ack(flow, CCP_sockfd);
+	return -1;
+      }
+      
+      
+
+
+      //printf("sending client %d %d bytes  (%d)\n", flow->client_fd, len, seq_n);
+
+      flow->received += len;
+      int n = write(flow->client_fd, data, len);
+      if(n < 0)
 	error("ERROR on write");
+
+      //printf("Yarnia\n");
+
       if(fin){
-	printf("CLOSING FLOW: %d", flow->id);
+	//printf("CLOSING FLOW: %d\n", flow->id);
 	send_CCP_ackfin(flow, CCP_sockfd);
 	remove_flow(flow->id);
       }else{
+	flow->your_seq_n += 1;
 	send_CCP_ack(flow, CCP_sockfd);
       }
+      //printf("RECIEVED THE DATA\n");
     }
   }
   return num_flows;
@@ -583,7 +710,7 @@ int send_HTTP_header(active_flow *flow)
   sprintf(buf, "%sConnection: Keep-Alive\r\n", buf);
   sprintf(buf, "%sAccept-Ranges: bytes\r\n\r\n", buf);
 
-  printf("%s\n", buf);
+  //  printf("%s\n", buf);
 
   int n = write(flow->client_fd, buf, strlen(buf));
   if (n < 0)
@@ -591,7 +718,7 @@ int send_HTTP_header(active_flow *flow)
       error("ERROR writing to socket");
       return -1;
     }
-
+  //  printf("\nDONEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE\n");
   return 0;
 }
 
@@ -719,6 +846,7 @@ int main(int argc, char **argv) {
   clientlen = sizeof(clientaddr);
   while (1) {
 
+
     /*    printf("\n\n CURRENT FILE TABLE (d_index: %d): \n", d_index);
     int i;
     for(i = 0; i < d_index; i++){
@@ -726,14 +854,8 @@ int main(int argc, char **argv) {
 	     dictionary[i]->port);
     }
     
-    printf(" CURRENT FLOW TABLE (num_flows: %d): \n", num_flows);
-    for(i = 0; i < num_flows; i++){
-      printf("Flow ID: %d, my_seq_n: %d, your_seq_n: %d, file_name: %s\n", flows[i]->id,flows[i]->my_seq_n,
-	     flows[i]->your_seq_n, flows[i]->file_name);
-    }
+  
     */
-    
-
     read_fds = active_fds;
     if( select( FD_SETSIZE, &read_fds, NULL, NULL, NULL) <0 )
       error("ERROR on select");
@@ -744,8 +866,7 @@ int main(int argc, char **argv) {
       if( FD_ISSET(act_fd, &read_fds) ){
 	
 	if( act_fd == HTTP_sockfd ){ //New connection requested
-	  printf("Creating New Connection...\n");
-
+	  //printf("Creating New Connection...\n");
 	  int connfd = accept(act_fd, (struct sockaddr *) &clientaddr, &clientlen);
 	  if(connfd < 0)
 	    error("ERROR on accept");
@@ -769,13 +890,13 @@ int main(int argc, char **argv) {
 	  char CCP_buf[PACKETSIZE];
 	  bzero(CCP_buf, PACKETSIZE);
 
-	  //RTT TIMING SHOULD BE IMPLEMENTED HERE
+
 	  n = recvfrom(act_fd, CCP_buf, PACKETSIZE, 0, 
 		       (struct sockaddr *) &clientaddr, &clientlen);
 	  if (n < 0)
 	    error("ERROR in recvfrom");
 	  if (n < 16){
-	    printf("Invalid CCP request");
+	    //printf("Invalid CCP request");
 	    continue; // dont bother parsing
 	    }
 	  hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr, 
@@ -785,8 +906,7 @@ int main(int argc, char **argv) {
 	  hostaddrp = inet_ntoa(clientaddr.sin_addr);
 	  if (hostaddrp == NULL)
 	    error("ERROR on inet_ntoa\n");
-	  printf("\nserver received backend packet from %s (%s)\n", 
-		 hostp->h_name, hostaddrp);
+	  //printf("\nserver received backend packet from %s (%s)\n", hostp->h_name, hostaddrp);
 
 	  handle_CCP_packet(CCP_buf, clientaddr, CCP_portno, CCP_sockfd);
 	
@@ -794,13 +914,17 @@ int main(int argc, char **argv) {
 
 	  bzero(buf, BUFSIZE);
 
-	  printf("connfd: %d\n", act_fd);
+	  //printf("connfd: %d\n", act_fd);
 	  n = read(act_fd, buf, BUFSIZE);
 	  if ( n < 0)
 	    error("ERROR reading from client");
+	  if( n == 0){
+	    printf("\n\n CLOSING CONNECTION: %d \n\n", act_fd);
+	    close(act_fd);
+	    FD_CLR(act_fd, &active_fds);
+	  }
 
-
-	  printf("Recieved: %s\n", buf);
+	  //printf("Recieved: %s\n", buf);
 	  int closeConn = 0;
 	  if(strlen(buf) != 0){
 	    closeConn = get_request(act_fd, buf, CCP_sockfd);

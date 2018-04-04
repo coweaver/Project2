@@ -21,16 +21,21 @@
 
 typedef struct active_flow {
   uint8_t id;
+  uint8_t error;
   struct sockaddr_in partneraddr;
   int addrlen;
   uint16_t destport;
   uint16_t sourceport;
   uint16_t my_seq_n;
   uint16_t your_seq_n;
-  clock_t last_clock;
-  int RTTEstimate;
+  uint16_t window_size;
+  uint16_t window_used;
+  uint16_t brate;
+  uint16_t RTT;
+  clock_t start; 
   FILE *file_fd;
   uint64_t file_len;
+  uint64_t received;
   int client_fd;
   char *version;
   char *file_name;
@@ -56,15 +61,16 @@ int d_index;
 active_flow *flows[BUFSIZE];
 int num_flows;
 
-
+/* Global - maximum bitrate */
+uint16_t global_bit_rate;
 
 void error(char *msg);
 
 int file_not_found();
 int peer_add(int connfd, char *request, char *version);
 int peer_view(int connfd, char *request, char *version, int CCP_sockfd);
-int peer_config(int connfd, char *request, char *version);
-int peer_status(char *uri);
+int peer_config(char *uri);
+int peer_status(int connfd, char *version);
 int get_request(int connfd, char *request, int CCP_sockfd);
 
 int send_CCP_request(int connfd, content_t file, int CCP_sockfd);
@@ -84,14 +90,11 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
 int build_CCP_header(char *buf, active_flow *flow, uint16_t *len, uint16_t *win_size,
 		     uint8_t *flags, uint16_t *chk_sum);
 
+uint16_t calc_window(active_flow *flow);
 
 active_flow *find_flow(uint8_t id);
 
 int remove_flow(uint8_t id);
-
-int handle_packet_loss(active_flow *flow, uint16_t seq_n);
-
-int synchronize_seq(active_flow *flow, uint16_t seq_n);
 
 int send_HTTP_header(active_flow *flow);
 
