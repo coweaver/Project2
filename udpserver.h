@@ -50,7 +50,9 @@ typedef struct node {
   char *host;
   uint16_t front_port;
   uint16_t back_port;
-  int metric; 
+  int metric;
+  int seq_n;
+  time_t time;
 } node;
 
 
@@ -65,6 +67,10 @@ int num_nodes = 2;
 /* Global - holds list of neighbors */
 node *neighbors[BUFSIZE];
 int num_neighbors;
+node *other_nodes[BUFSIZE];
+int num_other_nodes;
+
+node *my_node;
 
 /* Global - holds the files and paths */
 content_t dictionary[BUFSIZE];
@@ -77,6 +83,10 @@ int num_flows;
 /* Global - maximum bitrate */
 uint16_t global_bit_rate;
 
+
+/* Global - JSON string of network map */
+char map[BUFSIZE];
+
 void error(char *msg);
 
 int file_not_found();
@@ -87,6 +97,9 @@ int peer_status(int connfd, char *version);
 int peer_uuid(int connfd, uuid_t uuid, char *version);
 int peer_addNeighbor(int  connfd, char *request, char *version);
 int peer_neighbors(int connfd, char *version);
+int peer_map(int connfd, char *version);
+
+
 
 int get_request(int connfd, char *request, int CCP_sockfd, uuid_t uuid);
 
@@ -119,4 +132,13 @@ char *print_time();
 
 char *find_type();
 
-node *find_node(uuid_t uuid);
+node *find_neighbor(uuid_t uuid);
+
+node *find_other_node(uuid_t uuid);
+
+int handle_keep_alive(char *uuid_c);
+
+int handle_link_state(char *data, uint16_t seq_n);
+
+int forward_link_state(char *data);
+

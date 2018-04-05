@@ -36,9 +36,33 @@ int file_not_found(int connfd){
   return 1;  
 }
 
-node *find_node(uuid_t uuid){
+node *find_neighbor(uuid_t uuid){
+  int i;
+  for(i = 0; i < num_neighbors; i++){
+    if(uuid_compare(neighbors[i]->uuid, uuid) == 0){
+      return neighbors[i];
+    }
+  }
   return NULL;
 }
+
+node *find_other_node(uuid_t uuid){
+  int i;
+  for(i=0; i<num_other_nodes; i++){
+    if( uuid_compare(other_nodes[i]->uuid, uuid) == 0 ){
+      return other_nodes[i];
+    }
+  }
+  node *n = (node *)malloc(sizeof(struct node));
+  uuid_copy(n->uuid,uuid);
+  n->seq_n = 0;
+  char *name = (char *)malloc(10);
+  sprintf(name, "node_%d", num_nodes); 
+  num_nodes += 1;
+  n->name = name;
+  return n;
+}
+
 
 int peer_uuid(int connfd, uuid_t uuid, char *version){
   char buf[BUFSIZE], response[BUFSIZE];
@@ -248,6 +272,28 @@ int peer_kill(){
 }
 
 
+int peer_map(int connfd, char *version){
+  char header[BUFSIZE];
+  sprintf(header, "%s 200 OK \r\n", version); 
+  sprintf(header, "%sContent-type: %s\r\n", header, "application/json");
+  sprintf(header, "%sContent-length: %lu\r\n", header, strlen(map));
+  sprintf(header, "%s%s\r\n", header, print_time());
+  sprintf(header, "%sConnection: Keep-Alive\r\n", header);
+  sprintf(header, "%sAccept-Ranges: bytes\r\n\r\n", header);
+
+
+  int n = write(connfd, header, strlen(header));
+  if (n < 0)
+    error("ERROR writing to socket");
+
+  n = write(connfd, map, strlen(map));
+  if (n<0)
+    error("ERROR writing to socket");
+
+  return 0;
+}
+
+
 
 int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
 {
@@ -387,8 +433,9 @@ int get_request(int connfd, char *request, int CCP_sockfd, uuid_t uuid)
     peer_neighbors(connfd,version);
   }else if (strstr(uri, "uuid")) {
     peer_uuid(connfd, uuid, version);
-  }
-  else { /*not a valid get request*/
+  }else if (strstr(uri, "map")) {
+    peer_map(connfd, version);
+  }else { /*not a valid get request*/
     //printf("Invalid GET");
     return -1;
   }
@@ -456,7 +503,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   //printf("\n\n\nStarting send_CCP_request\n\n\n");
 
   af = (active_flow *)malloc(sizeof(active_flow));
-  node *node = find_node(file->uuid);
+  node *node = find_neighbor(file->uuid);
   
   af->destport = node->back_port;
   af->file_name = file->file;
@@ -640,6 +687,9 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
 }
 
 
+
+
+
 int send_CCP_ackfin(active_flow *flow, int CCP_sockfd){
   //printf("SEND CCP ACKFIN\n\n");
   char buf[PACKETSIZE];
@@ -680,8 +730,17 @@ int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, 
   memcpy(chk_sum, buf+14, 2);
   memcpy(id, buf+13, 1);
   
-
+  char temp[BUFSIZE];
   //read flags
+  if(buf[13] == (char)0x01){ 
+    handle_keep_alive(buf+16); //uuid
+    return 0;
+  }if(buf[13] == (char)0x02){
+    memcpy(temp, buf, *len+16);
+    handle_link_state(buf+16, *seq_n);//data
+    forward_link_state(buf);
+    return 0;
+  }
   if(buf[12] == (char)0xC0){ // 0xC0 = 1100
     //printf("ACK SYN\n");
     *ack = 1;
@@ -713,6 +772,86 @@ int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, 
   
 
 return 0;
+}
+
+int handle_keep_alive(char *uuid_c){
+  uuid_t uuid;
+  uuid_parse(uuid_c, uuid);
+  node *n = find_neighbor(uuid);
+  if( n == NULL) return 0;
+  time(&(n->time));
+  return 0;
+}
+
+
+int handle_link_state(char *data, uint16_t seq_n){
+  char uuid_c[100], buf[BUFSIZE], name[100];
+  uuid_t uuid;
+  memcpy(uuid_c, data, 16);
+  uuid_parse(uuid_c, uuid);
+  node *n = find_neighbor(uuid);
+  if( n == NULL )
+    n = find_other_node(uuid);
+  if( n->seq_n >= seq_n ){
+    return 0;
+  }
+  sprintf(buf, "\"%s\":{\"", name);
+  data = data+17; // removes uuid and { from JSON string
+  int metric;
+  char *temp;
+  while( (temp = strtok(data, ",")) != NULL ){
+    sscanf(temp, "\"%s\":%d", uuid_c,  &metric);
+    uuid_parse(uuid_c, uuid);
+    n = find_neighbor(uuid);
+    if( n == NULL )
+      n = find_other_node(uuid);
+    sprintf(buf, "%s%s\":%d,\"", buf, n->name, metric);
+  }
+  sscanf(data, "\"%s\":%d}", uuid_c, &metric);
+  uuid_parse(uuid_c, uuid);
+  n = find_neighbor(uuid);
+  if( n == NULL )
+    n = find_other_node(uuid);
+  sprintf(buf, "%s%s\":%d}", buf, n->name, metric);
+  
+  
+  sprintf(name, "\"%s\":{", name);
+  char *line = strstr(map, name);
+  if(line != NULL){
+    sprintf(map, "%.*s", (int)(line - map), map);
+    line = strstr(line, "}");
+    sprintf(map, "%s%s", map, line+1);
+  }
+  line = strstr(map, "}}");
+  strcpy(line, buf);
+  sprintf(map, "%s}", map);  
+
+  return 0;
+}
+
+
+int forward_link_state(char *buf){
+  int i;
+  struct hostent *server;
+  struct sockaddr_in partneraddr;
+  for(i=0; i<num_neighbors; i++){
+    server  = gethostbyname(neighbors[i]->host);
+    if(server == NULL){
+      fprintf(stderr, "ERROR, no such host as %s\n", neighbors[i]->host);
+      exit(0);
+    }
+    bzero((char *) &partneraddr, sizeof(partneraddr));
+    partneraddr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr,
+	  (char *)&partneraddr.sin_addr.s_addr, server->h_length);
+    partneraddr.sin_port = htons((unsigned short)neighbors[i]->back_port);
+    
+    int n = sendto(my_node->back_port, buf, 32, 0,
+		   (struct sockaddr *) &(partneraddr), sizeof(partneraddr));
+    if( n < 0 )
+      error("ERROR on sendto");
+  }
+  return 0;
 }
 
 
@@ -927,7 +1066,7 @@ int main(int argc, char **argv) {
   int n; /* message byte size */
   char *node_name, *content_dir;
   uuid_t uuid;
-
+  int i;
   
   /* 
    * check command line arguments 
@@ -974,7 +1113,6 @@ int main(int argc, char **argv) {
       content_dir = val;
     }else if(strcmp(key, "peer_count") == 0){
       int peer_count = atoi(val);
-      int i;
       char P_name[100], P_uuid[100], P_hostname[100], P_frontend[100], P_backend[100], P_metric[100]; 
       for(i = 0; i<peer_count; i++){
 	fgets(buf, BUFSIZE, config_fd);
@@ -995,9 +1133,7 @@ int main(int argc, char **argv) {
 	printf("continue\n");
 
 	uuid_parse(P_uuid, neighbors[i]->uuid);
-	
-	
-	
+		
 	neighbors[i]->front_port = atoi(P_frontend);
 	neighbors[i]->back_port = atoi(P_backend);
 	neighbors[i]->metric = atoi(P_metric);
@@ -1017,6 +1153,22 @@ int main(int argc, char **argv) {
     CCP_portno = 18346;
   if(strcmp(content_dir,"")==0)
     content_dir = "content/";
+
+  
+
+  my_node = (node *)malloc(sizeof(struct node));
+  uuid_copy(my_node->uuid, uuid);
+  my_node->name = node_name;
+  my_node->front_port = HTTP_portno;
+  my_node->back_port = CCP_portno;
+  
+  sprintf(map, "{\"%s\":{", my_node->name);
+  for(i = 0; i < num_neighbors-1; i++){
+    sprintf(map, "%s\"%s\":%d,", map, neighbors[i]->name, neighbors[i]->metric);
+  }
+  sprintf(map, "%s\"%s\":%d}}", map, neighbors[num_neighbors-1]->name, 
+	  neighbors[num_neighbors-1]->metric);
+
 
   printf("portno: %d\n", HTTP_portno);
 
