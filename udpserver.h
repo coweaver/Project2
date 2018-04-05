@@ -14,6 +14,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <uuid/uuid.h>
+
 
 #define BUFSIZE 1024
 #define PACKETSIZE 1500
@@ -42,16 +44,27 @@ typedef struct active_flow {
   uint16_t max_window;
 } active_flow;
 
+typedef struct node {
+  uuid_t uuid;
+  char *name;
+  char *host;
+  uint16_t front_port;
+  uint16_t back_port;
+  int metric; 
+} node;
 
 
 typedef struct content *content_t;
 struct content {
   char *file;
-  char *host;
-  char *port;
+  uuid_t uuid;
   char *brate;
 };
 
+int num_nodes = 2;
+/* Global - holds list of neighbors */
+node *neighbors[BUFSIZE];
+int num_neighbors;
 
 /* Global - holds the files and paths */
 content_t dictionary[BUFSIZE];
@@ -71,7 +84,11 @@ int peer_add(int connfd, char *request, char *version);
 int peer_view(int connfd, char *request, char *version, int CCP_sockfd);
 int peer_config(char *uri);
 int peer_status(int connfd, char *version);
-int get_request(int connfd, char *request, int CCP_sockfd);
+int peer_uuid(int connfd, uuid_t uuid, char *version);
+int peer_addNeighbor(int  connfd, char *request, char *version);
+int peer_neighbors(int connfd, char *version);
+
+int get_request(int connfd, char *request, int CCP_sockfd, uuid_t uuid);
 
 int send_CCP_request(int connfd, content_t file, int CCP_sockfd);
 int resend_CCP_request(active_flow *flow, int CCP_sockfd);
@@ -101,3 +118,5 @@ int send_HTTP_header(active_flow *flow);
 char *print_time();
 
 char *find_type();
+
+node *find_node(uuid_t uuid);

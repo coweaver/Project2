@@ -15,6 +15,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <uuid/uuid.h>
 #include "udpserver.h"
 
 /*
@@ -35,16 +36,88 @@ int file_not_found(int connfd){
   return 1;  
 }
 
+node *find_node(uuid_t uuid){
+  return NULL;
+}
+
+int peer_uuid(int connfd, uuid_t uuid, char *version){
+  char buf[BUFSIZE], response[BUFSIZE];
+  char c_uuid[100];
+  uuid_unparse(uuid, c_uuid);
+  sprintf(response, "{\"uuid\":\"%s\"}", c_uuid);
+      
+  sprintf(buf, "%s 200 OK \r\n", version); 
+  sprintf(buf, "%sContent-type: %s\r\n", buf, "application/json"); 
+  sprintf(buf, "%sContent-length: %lu\r\n",buf, strlen(response));
+  sprintf(buf, "%s%s\r\n", buf, print_time());
+  sprintf(buf, "%sConnection: Keep-Alive\r\n", buf);
+  sprintf(buf, "%sAccept-Ranges: bytes\r\n\r\n%s", buf, response);
+
+  printf("%s", buf);
+  int n = write(connfd, buf, strlen(buf));
+  if( n < 0)
+    error("ERROR on write");
+ 
+  return 0;
+}
+
+
+int peer_neighbors(int connfd, char *version)
+{
+  printf("Neighbors: %d\n", num_neighbors);
+  int i = 0;
+  char buf[BUFSIZE];
+  char header[BUFSIZE];
+  char uuid[100];
+  node *cur_node;
+  
+  sprintf(buf, "[");
+  while (i < num_neighbors)
+    {
+      cur_node = neighbors[i];
+      uuid_unparse(cur_node->uuid, uuid);
+      sprintf(buf, "%s{\"uuid\":\"%s\", ", buf, uuid);
+      sprintf(buf, "%s\"name\":\"%s\", ", buf, cur_node->name);
+      sprintf(buf, "%s\"host\":\"%s\", ", buf, cur_node->host);
+      sprintf(buf, "%s\"frontend\":%d, ", buf, cur_node->front_port);
+      sprintf(buf, "%s\"backend\":%d, ", buf, cur_node->back_port);
+      sprintf(buf, "%s\"metric\":%d}", buf, cur_node->metric);
+      if( i != num_neighbors - 1)
+	sprintf(buf, "%s,", buf);
+      i++;
+    }
+  sprintf(buf, "%s]", buf);
+  printf("%s\n", buf);
+  sprintf(header, "%s 200 OK \r\n", version); 
+  sprintf(header, "%sContent-type: %s\r\n", header, "application/json");
+  sprintf(header, "%sContent-length: %lu\r\n", header, strlen(buf));
+  sprintf(header, "%s%s\r\n", header, print_time());
+  sprintf(header, "%sConnection: Keep-Alive\r\n", header);
+  sprintf(header, "%sAccept-Ranges: bytes\r\n\r\n", header);
+
+
+  int n = write(connfd, header, strlen(header));
+  if (n < 0)
+    error("ERROR writing to socket");
+
+  n = write(connfd, buf, strlen(buf));
+  if (n < 0)
+    error("ERROR writing to socket");
+  return 0;
+}
+
+
+
+
 int peer_add(int connfd, char *request, char *version)
 {
   //  printf("Starting peer_add: %s\n", request); 
-  char *temp, key[100], val[100], buf[BUFSIZE], *file, *host, *port, *rate;
+  char *temp, key[100], val[100], buf[BUFSIZE], *file, *uuid, *rate;
   int n;
  
 
   file = (char *)malloc(100);
-  host = (char *)malloc(100);
-  port = (char *)malloc(100);
+  uuid = (char *)malloc(100);
   rate = (char *)malloc(100);
 
   if( strstr(request, "rate") == NULL ){
@@ -64,10 +137,8 @@ int peer_add(int connfd, char *request, char *version)
     }      
     if(strcmp(key, "path")==0)
       snprintf(file, sizeof(val), "%s", val); 
-    if(strcmp(key, "host")==0)
-      snprintf(host, sizeof(val), "%s", val); 
-    if(strcmp(key, "port")==0)
-      snprintf(port, sizeof(val), "%s", val); 
+    if(strcmp(key, "peer")==0)
+      snprintf(uuid, sizeof(val), "%s", val);
     if(strcmp(key, "rate")==0)
       snprintf(rate, sizeof(val), "%s", val); 
     
@@ -77,19 +148,15 @@ int peer_add(int connfd, char *request, char *version)
   if(strcmp(file,  "")==0){
     //printf("No file path found\n");
     return -1;
-  }else if(strcmp(host, "")==0){
-    //printf("No host found\n");
-    return -1;
-  }else if(strcmp(port,"")==0){
-    //printf("No port found\n");
+  }else if(strcmp(uuid,"")==0){
+    //printf("No peer found\n");
     return -1;
   }
 
   dictionary[d_index] = (content_t)malloc(sizeof(struct content));
 
+  uuid_parse(uuid, dictionary[d_index]->uuid);
   dictionary[d_index]->file = file;
-  dictionary[d_index]->host = host;
-  dictionary[d_index]->port =  port;
   dictionary[d_index]->brate = rate;
   d_index++; 
 
@@ -99,6 +166,84 @@ int peer_add(int connfd, char *request, char *version)
   if ((n = write(connfd, buf, strlen(buf))) < 0)
     error("ERROR on write");
     
+  return 0;
+}
+
+int peer_addNeighbor(int connfd, char *request, char *version){
+  char name[10], *uuid, *host, *frontend, *backend, *metric, key[100], val[100];
+  printf("Starting addNeighbor\n");
+  
+  uuid = (char *)malloc(100);
+  host = (char *)malloc(100);
+  frontend = (char *)malloc(100);
+  backend = (char *)malloc(100);
+  metric =  (char *)malloc(100);
+  
+  bzero(key, 100);
+  bzero(val, 100);
+
+  
+  char buf[BUFSIZE];
+  sprintf(buf, "%s 200 OK \r\n\r\n", version);
+  int n = write(connfd, buf, strlen(buf));
+  if(n < 0)
+    error("ERROR on write");
+
+ 
+
+  strtok(request, "?");
+  char *temp = strtok(NULL, "&");
+ 
+  printf("starting loop\n");
+  while(temp != NULL){
+    printf("%s\n", temp);
+    sscanf(temp, "%[^=]=%s", key, val);
+    if(strcmp(key, "") == 0){
+      //printf("Invalid GET request\n");
+      return -1;
+    }      
+    if(strcmp(key, "uuid")==0)
+      snprintf(uuid, sizeof(val), "%s", val); 
+    if(strcmp(key, "host")==0)
+      snprintf(host, sizeof(val), "%s", val);
+    if(strcmp(key, "frontend")==0)
+      snprintf(frontend, sizeof(val), "%s", val); 
+    if(strcmp(key, "backend")==0)
+      snprintf(backend, sizeof(val), "%s", val); 
+    if(strcmp(key, "metric")==0)
+      snprintf(metric, sizeof(val), "%s", val); 
+
+    temp = strtok(NULL, "&");
+  }
+
+  printf("loop done.\n");
+
+  neighbors[num_neighbors] = (node *)malloc(sizeof(struct node));
+  sprintf(name, "node_%d", num_nodes); 
+  neighbors[num_neighbors]->name = (char *)malloc(strlen(name));
+  neighbors[num_neighbors]->host = (char *)malloc(strlen(host));
+
+  printf("clean\n");
+  strcpy(neighbors[num_neighbors]->host,host);
+  strcpy(neighbors[num_neighbors]->name,name);
+  
+  printf("%s\n", uuid);
+  uuid_parse(uuid, neighbors[num_neighbors]->uuid);
+  uuid_unparse(neighbors[num_neighbors]->uuid, uuid);
+  printf("%s\n", uuid);
+
+  neighbors[num_neighbors]->front_port = atoi(frontend);
+  neighbors[num_neighbors]->back_port = atoi(backend);
+  neighbors[num_neighbors]->metric = atoi(metric);
+  
+  num_nodes += 1;
+  num_neighbors += 1;
+  
+  return 0;
+}
+
+int peer_kill(){
+  exit(0);
   return 0;
 }
 
@@ -195,7 +340,7 @@ int peer_status(int connfd, char *version){
 /*
  * returns 0 on success, -1 on failure
  */
-int get_request(int connfd, char *request, int CCP_sockfd)
+int get_request(int connfd, char *request, int CCP_sockfd, uuid_t uuid)
 {
   int closeConn = 0;
   //printf("get_request: %s", request);
@@ -223,19 +368,25 @@ int get_request(int connfd, char *request, int CCP_sockfd)
   //printf("%s, %s\n", uri,  version);
 
 
-  if (strstr(uri, "add")){
+  if (strstr(uri, "add?")){
     peer_add(connfd, uri, version);
     close(connfd);
     closeConn = 1;
   } 
   else if (strstr(uri, "view")) {
     peer_view(connfd, uri, version, CCP_sockfd);
-  }
-  else if (strstr(uri, "config")) {
+  }else if(strstr(uri, "kill")) {
+    peer_kill();
+  }else if (strstr(uri, "config")) {
     peer_config(uri);
-  }
-  else if (strstr(uri, "status")) {
+  }else if (strstr(uri, "status")) {
     peer_status(connfd, version);
+  }else if (strstr(uri, "addneighbor?")) {
+    peer_addNeighbor(connfd, uri, version);
+  }else if (strstr(uri, "neighbors")) {
+    peer_neighbors(connfd,version);
+  }else if (strstr(uri, "uuid")) {
+    peer_uuid(connfd, uuid, version);
   }
   else { /*not a valid get request*/
     //printf("Invalid GET");
@@ -305,8 +456,9 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   //printf("\n\n\nStarting send_CCP_request\n\n\n");
 
   af = (active_flow *)malloc(sizeof(active_flow));
+  node *node = find_node(file->uuid);
   
-  af->destport = atoi(file->port);
+  af->destport = node->back_port;
   af->file_name = file->file;
   af->my_seq_n = 0;
   af->client_fd = connfd;
@@ -322,9 +474,9 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   
   
 
-  struct hostent *server = gethostbyname(file->host);
+  struct hostent *server = gethostbyname(node->host);
   if(server == NULL){
-    fprintf(stderr, "ERROR, no such host as %s\n", file->host);
+    fprintf(stderr, "ERROR, no such host as %s\n", node->host);
     exit(0);
   }
   bzero((char *) &partneraddr, sizeof(partneraddr));
@@ -675,8 +827,6 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       }
       
       
-
-
       //printf("sending client %d %d bytes  (%d)\n", flow->client_fd, len, seq_n);
 
       flow->received += len;
@@ -775,16 +925,101 @@ int main(int argc, char **argv) {
   char *hostaddrp; /* dotted decimal host addr string */
   int optval; /* flag value for setsockopt */
   int n; /* message byte size */
+  char *node_name, *content_dir;
+  uuid_t uuid;
 
+  
   /* 
    * check command line arguments 
    */
-  if (argc != 3) {
-    fprintf(stderr, "usage: %s <port> <port>\n", argv[0]);
-    exit(1);
+
+  printf("Opening config file\n");
+  char * config_file = "node.conf";  
+  bzero(uuid, sizeof(uuid_t));
+
+  if (argc > 1){
+    if (argc != 3) {
+      fprintf(stderr, "usage: %s or %s -c <config file>\n", argv[0], argv[0]);
+      exit(1);
+    }else if( strcmp("-c", argv[1])==0){
+	config_file = argv[2];
+    }else{
+      fprintf(stderr, "usage: %s or %s -c <config file>\n", argv[0], argv[0]);
+      exit(1);
+    }      
   }
-  HTTP_portno = atoi(argv[1]);
-  CCP_portno = atoi(argv[2]);
+
+  FILE *config_fd = fopen(config_file, "r");
+  printf("Opened.\n");
+
+  HTTP_portno = 0;
+  CCP_portno = 0;
+
+  char key[100], val[100];
+  while(fgets(buf, BUFSIZE, config_fd) != NULL){
+    printf("%s\n", buf);
+    sscanf(buf, "%s = %[^\n]", key, val);
+    printf("%s\n", key);
+    if(strcmp(key, "uuid") == 0){
+      printf("here\n");
+      uuid_parse(val, uuid);
+    }else if(strcmp(key, "name") == 0){
+      node_name = val;
+    }else if(strcmp(key, "frontend_port") == 0){
+      printf("%s\n", val);
+      HTTP_portno = atoi(val);
+    }else if(strcmp(key, "backend_port") == 0){
+      CCP_portno = atoi(val);
+    }else if(strcmp(key, "content_dir") == 0){
+      content_dir = val;
+    }else if(strcmp(key, "peer_count") == 0){
+      int peer_count = atoi(val);
+      int i;
+      char P_name[100], P_uuid[100], P_hostname[100], P_frontend[100], P_backend[100], P_metric[100]; 
+      for(i = 0; i<peer_count; i++){
+	fgets(buf, BUFSIZE, config_fd);
+	neighbors[i] = (node *)malloc(sizeof(struct node));
+	
+	sscanf(buf, "%s = %[^\n]", key, val);
+	sscanf(val, "%[^,],%[^,],%[^,],%[^,],%[^,]",P_uuid, P_hostname,P_frontend,P_backend,P_metric);
+	printf("peer: %s, %s, %s, %s, %s\n", P_uuid, P_hostname, P_frontend,P_backend,P_metric);
+	
+	sprintf(P_name, "node_%d", num_nodes);
+	printf("%s, %s\n", P_name, P_hostname);
+	
+	neighbors[i]->name = (char *)malloc(strlen(P_name));
+	neighbors[i]->host = (char *)malloc(strlen(P_hostname));
+	strcpy(neighbors[i]->name, P_name);
+	strcpy(neighbors[i]->host, P_hostname);
+
+	printf("continue\n");
+
+	uuid_parse(P_uuid, neighbors[i]->uuid);
+	
+	
+	
+	neighbors[i]->front_port = atoi(P_frontend);
+	neighbors[i]->back_port = atoi(P_backend);
+	neighbors[i]->metric = atoi(P_metric);
+	num_neighbors += 1;
+	num_nodes += 1;
+      }
+    }
+    printf("next.\n");
+  }
+
+
+  if(uuid_is_null(uuid))
+    uuid_generate(uuid);
+  if(HTTP_portno == 0)
+    HTTP_portno = 18345;
+  if(CCP_portno == 0)
+    CCP_portno = 18346;
+  if(strcmp(content_dir,"")==0)
+    content_dir = "content/";
+
+  printf("portno: %d\n", HTTP_portno);
+
 
   /* 
    * socket: create the HTTP and CCP sockets 
@@ -927,7 +1162,7 @@ int main(int argc, char **argv) {
 	  //printf("Recieved: %s\n", buf);
 	  int closeConn = 0;
 	  if(strlen(buf) != 0){
-	    closeConn = get_request(act_fd, buf, CCP_sockfd);
+	    closeConn = get_request(act_fd, buf, CCP_sockfd, uuid);
 	  }
 	  if(closeConn){
 	    printf("\n\n CLOSING CONNECTION: %d \n\n", act_fd);
