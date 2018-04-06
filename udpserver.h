@@ -63,13 +63,24 @@ struct content {
   char *brate;
 };
 
+typedef struct adjacent_vertex{
+  char *name;
+  int metric;
+} adj_vert;
+
+typedef struct vertex{
+  char *name;
+  int len;
+  adj_vert *adjacencies[100];
+}vertex;
+
 int num_nodes = 2;
 /* Global - holds list of neighbors */
 node *neighbors[BUFSIZE];
 int num_neighbors;
 node *other_nodes[BUFSIZE];
 int num_other_nodes;
-
+/* Global - defines local node characteristics */
 node *my_node;
 
 /* Global - holds the files and paths */
@@ -85,7 +96,8 @@ uint16_t global_bit_rate;
 
 
 /* Global - JSON string of network map */
-char map[BUFSIZE];
+vertex *map[BUFSIZE];
+int map_len;
 
 void error(char *msg);
 
@@ -138,7 +150,14 @@ node *find_other_node(uuid_t uuid);
 
 int handle_keep_alive(char *uuid_c);
 
-int handle_link_state(char *data, uint16_t seq_n);
+int handle_link_state(char *data, uint16_t seq_n, uint16_t len);
 
 int forward_link_state(char *data);
 
+void remove_neighbor(int index);
+
+char *get_neighbor_metrics();
+
+int send_link_state();
+
+int send_keep_alive(uint16_t CCP_portno);

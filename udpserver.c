@@ -55,7 +55,7 @@ node *find_other_node(uuid_t uuid){
   }
   node *n = (node *)malloc(sizeof(struct node));
   uuid_copy(n->uuid,uuid);
-  n->seq_n = 0;
+  n->seq_n = -1;
   char *name = (char *)malloc(10);
   sprintf(name, "node_%d", num_nodes); 
   num_nodes += 1;
@@ -273,10 +273,29 @@ int peer_kill(){
 
 
 int peer_map(int connfd, char *version){
-  char header[BUFSIZE];
+  char header[BUFSIZE], JSON_map[BUFSIZE];
+  
+  int i = 0;
+  int j = 0;
+  sprintf(JSON_map, "{"); 
+  for(; i<map_len; i++){
+    sprintf(JSON_map, "%s\"%s\":{", JSON_map, map[i]->name);
+    for(; j<map[i]->len; j++){
+      sprintf(JSON_map, "%s\"%s\":%d", JSON_map, map[i]->adjacencies[j]->name, map[i]->adjacencies[j]->metric);
+      if(j == map[i]->len - 1)
+	sprintf(JSON_map, "%s}", JSON_map);
+      else
+	sprintf(JSON_map, "%s,", JSON_map);
+    }
+    if( i == map_len -1)
+      sprintf(JSON_map, "%s}", JSON_map);
+    else
+      sprintf(JSON_map, "%s,", JSON_map);
+  }
+
   sprintf(header, "%s 200 OK \r\n", version); 
   sprintf(header, "%sContent-type: %s\r\n", header, "application/json");
-  sprintf(header, "%sContent-length: %lu\r\n", header, strlen(map));
+  sprintf(header, "%sContent-length: %lu\r\n", header, strlen(JSON_map));
   sprintf(header, "%s%s\r\n", header, print_time());
   sprintf(header, "%sConnection: Keep-Alive\r\n", header);
   sprintf(header, "%sAccept-Ranges: bytes\r\n\r\n", header);
@@ -285,14 +304,142 @@ int peer_map(int connfd, char *version){
   int n = write(connfd, header, strlen(header));
   if (n < 0)
     error("ERROR writing to socket");
+  
 
-  n = write(connfd, map, strlen(map));
+  n = write(connfd, map, strlen(JSON_map));
   if (n<0)
     error("ERROR writing to socket");
 
   return 0;
 }
 
+void remove_neighbor(int index)
+{
+  node *n = neighbors[index];
+  for (int i=index; i<num_neighbors-1; i++)
+    {
+      neighbors[i] = neighbors[i+1];
+    }
+  free(n->name);
+  free(n->host);
+  free(n);
+  num_neighbors -= 1;
+  return;
+}
+
+//returns JSON String
+char *get_neighbor_metrics()
+{
+  char *buf = (char *)malloc(BUFSIZE);
+  char uuid[100];
+  node *cur_node;
+  
+  sprintf(buf, "{");
+  int i = 0;
+  while (i < num_neighbors)
+    {
+      cur_node = neighbors[i];
+      uuid_unparse(cur_node->uuid, uuid);
+      sprintf(buf, "%s\"%s\":", buf, uuid);
+      if(i == num_neighbors - 1)
+	sprintf(buf, "%s%d", buf, cur_node->metric);
+      else
+	sprintf(buf, "%s%d,", buf, cur_node->metric);
+      i++;
+    }
+  sprintf(buf, "%s}", buf);
+  return buf;
+}
+
+int send_link_state()
+{
+  char buf[BUFSIZE];
+  uint16_t num = 0, linkstate_flag = 2; //0010
+  char* metrics = get_neighbor_metrics(); //returns JSON string
+  uint16_t len = strlen(metrics);
+  struct hostent *server;
+  struct sockaddr_in partneraddr;
+
+  memcpy(buf, &my_node->back_port, 2);
+  
+  memcpy(buf+4, &num, 2);
+  memcpy(buf+6, &num, 2);
+  memcpy(buf+8, &len, 2);
+  memcpy(buf+10, &num, 2);
+  memcpy(buf+12, &linkstate_flag, 1);
+  memcpy(buf+13, &num, 1);
+  memcpy(buf+14, &num, 2);
+  memcpy(buf+16, my_node->uuid, 16);
+  memcpy(buf+32, metrics, len); 
+
+  free(metrics);
+
+  for (int i=0; i< num_neighbors; i++)
+    {
+      memcpy(buf+2, &(neighbors[i]->back_port), 2);
+
+      server = gethostbyname(neighbors[i]->host);
+      if(server == NULL){
+	fprintf(stderr, "ERROR, no such host as %s\n", neighbors[i]->host);
+	exit(0);
+      }
+      bzero((char *) &partneraddr, sizeof(partneraddr));
+      partneraddr.sin_family = AF_INET;
+      bcopy((char *)server->h_addr,
+	    (char *)&partneraddr.sin_addr.s_addr, server->h_length);
+      partneraddr.sin_port = htons((unsigned short)neighbors[i]->back_port);
+
+      int n = sendto(my_node->back_port, buf, 32, 0,
+		     (struct sockaddr *) &(partneraddr), sizeof(partneraddr));
+      if( n < 0 )
+	error("ERROR on sendto");
+    }
+   return 0;
+}
+
+int send_keep_alive(uint16_t CCP_portno)
+{
+  char buf[BUFSIZE];
+  uint16_t num = 0, keepalive_flag = 1;
+  uint16_t uuid_len = 16;
+
+  memcpy(buf, &CCP_portno, 2);
+
+  memcpy(buf+4, &num, 2);
+  memcpy(buf+6, &num, 2);
+  memcpy(buf+8, &uuid_len, 2);
+  memcpy(buf+10, &num, 2);
+  memcpy(buf+12, &keepalive_flag, 1);
+  memcpy(buf+13, &num, 1);
+  memcpy(buf+14, &num, 2);
+  memcpy(buf+16, my_node->uuid,16);
+  
+  struct hostent *server;
+  struct sockaddr_in partneraddr;
+  
+  for (int i=0; i< num_neighbors; i++){
+    
+    memcpy(buf+2, &(neighbors[i]->back_port), 2);
+    
+    server = gethostbyname(neighbors[i]->host);
+    if(server == NULL){
+      fprintf(stderr, "ERROR, no such host as %s\n", neighbors[i]->host);
+      exit(0);
+    }
+    bzero((char *) &partneraddr, sizeof(partneraddr));
+    partneraddr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr,
+	  (char *)&partneraddr.sin_addr.s_addr, server->h_length);
+    partneraddr.sin_port = htons((unsigned short)neighbors[i]->back_port);
+    
+    int n = sendto(my_node->back_port, buf, 32, 0,
+		   (struct sockaddr *) &(partneraddr), sizeof(partneraddr));
+    
+    if( n < 0 )
+      error("ERROR on sendto");
+  }
+  return 0;
+}
 
 
 int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
@@ -730,14 +877,14 @@ int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, 
   memcpy(chk_sum, buf+14, 2);
   memcpy(id, buf+13, 1);
   
-  char temp[BUFSIZE];
+  
   //read flags
   if(buf[13] == (char)0x01){ 
     handle_keep_alive(buf+16); //uuid
     return 0;
   }if(buf[13] == (char)0x02){
-    memcpy(temp, buf, *len+16);
-    handle_link_state(buf+16, *seq_n);//data
+
+    handle_link_state(buf+16, *seq_n, *len);//data
     forward_link_state(buf);
     return 0;
   }
@@ -779,53 +926,69 @@ int handle_keep_alive(char *uuid_c){
   uuid_parse(uuid_c, uuid);
   node *n = find_neighbor(uuid);
   if( n == NULL) return 0;
-  time(&(n->time));
+  n->time = time(NULL);
   return 0;
 }
 
 
-int handle_link_state(char *data, uint16_t seq_n){
-  char uuid_c[100], buf[BUFSIZE], name[100];
+int handle_link_state(char *data, uint16_t seq_n, uint16_t len){
+  char uuid_c[17], buf[BUFSIZE], temp[BUFSIZE];
   uuid_t uuid;
+  
+  memcpy(temp, buf, len+16);
   memcpy(uuid_c, data, 16);
   uuid_parse(uuid_c, uuid);
+  if(uuid_compare(uuid,my_node->uuid) == 0){
+    return 0;
+  } 
   node *n = find_neighbor(uuid);
   if( n == NULL )
     n = find_other_node(uuid);
   if( n->seq_n >= seq_n ){
     return 0;
   }
-  sprintf(buf, "\"%s\":{\"", name);
+  vertex *v = (vertex *)malloc(sizeof(vertex));
+  v->name = n->name;
   data = data+17; // removes uuid and { from JSON string
   int metric;
-  char *temp;
-  while( (temp = strtok(data, ",")) != NULL ){
-    sscanf(temp, "\"%s\":%d", uuid_c,  &metric);
+  char *line;
+  int i=0;
+  while( (line = strtok(data, ",")) != NULL ){
+    sscanf(line, "\"%s\":%d", uuid_c,  &metric);
     uuid_parse(uuid_c, uuid);
     n = find_neighbor(uuid);
     if( n == NULL )
       n = find_other_node(uuid);
-    sprintf(buf, "%s%s\":%d,\"", buf, n->name, metric);
+    adj_vert *adv = (adj_vert *)malloc(sizeof(adj_vert));
+    adv->name = n->name;
+    adv->metric = n->metric;
+    v->adjacencies[i] = adv;
+    i++;
   }
   sscanf(data, "\"%s\":%d}", uuid_c, &metric);
   uuid_parse(uuid_c, uuid);
   n = find_neighbor(uuid);
   if( n == NULL )
     n = find_other_node(uuid);
-  sprintf(buf, "%s%s\":%d}", buf, n->name, metric);
-  
-  
-  sprintf(name, "\"%s\":{", name);
-  char *line = strstr(map, name);
-  if(line != NULL){
-    sprintf(map, "%.*s", (int)(line - map), map);
-    line = strstr(line, "}");
-    sprintf(map, "%s%s", map, line+1);
+  adj_vert *adv = (adj_vert *)malloc(sizeof(adj_vert));
+  adv->name = n->name;
+  adv->metric = n->metric;
+  v->adjacencies[i] = adv;;
+  i++;
+  v->len = i;
+  int new = 1;
+  for(i = 0; i<map_len; i++){
+    if( strcmp(map[i]->name, v->name ) == 0){
+      map[i] = v;
+      new = 0;
+    }
   }
-  line = strstr(map, "}}");
-  strcpy(line, buf);
-  sprintf(map, "%s}", map);  
-
+  if(new){
+    map[map_len] = v;
+    map_len += 1;
+  }
+ 
+  forward_link_state(temp);
   return 0;
 }
 
@@ -1162,12 +1325,15 @@ int main(int argc, char **argv) {
   my_node->front_port = HTTP_portno;
   my_node->back_port = CCP_portno;
   
-  sprintf(map, "{\"%s\":{", my_node->name);
-  for(i = 0; i < num_neighbors-1; i++){
-    sprintf(map, "%s\"%s\":%d,", map, neighbors[i]->name, neighbors[i]->metric);
+  
+  map[0] = (vertex *)malloc(sizeof(struct vertex));
+  map[0]->name = my_node->name;
+  for(i=0; i < num_neighbors; i++){
+    map[0]->adjacencies[i] = (adj_vert *)malloc(sizeof(struct adjacent_vertex));
+    map[0]->adjacencies[i]->name = neighbors[i]->name;
+    map[0]->adjacencies[i]->metric = neighbors[i]->metric;
   }
-  sprintf(map, "%s\"%s\":%d}}", map, neighbors[num_neighbors-1]->name, 
-	  neighbors[num_neighbors-1]->metric);
+  map[0]->len = i;
 
 
   printf("portno: %d\n", HTTP_portno);
@@ -1231,20 +1397,24 @@ int main(int argc, char **argv) {
   /* main loop: wait for an active FD, then appropriately respond
    */
   clientlen = sizeof(clientaddr);
+  time_t my_time = time(NULL);
   while (1) {
-
-
-    /*    printf("\n\n CURRENT FILE TABLE (d_index: %d): \n", d_index);
-    int i;
-    for(i = 0; i < d_index; i++){
-      printf("file: %s, host:, %s, port: %s\n", dictionary[i]->file,dictionary[i]->host,
-	     dictionary[i]->port);
+    printf("looping\n");
+    time_t cur_time = time(NULL);
+    if (cur_time - my_time >10){
+      my_time = cur_time;
+      send_keep_alive(CCP_portno);
+      for(i=0; i<num_neighbors; i++){
+	if(cur_time - neighbors[i]->time > 30){
+	  remove_neighbor(i);
+	  i--;
+	} 
+      }
     }
-    
-  
-    */
+      
     read_fds = active_fds;
-    if( select( FD_SETSIZE, &read_fds, NULL, NULL, NULL) <0 )
+    struct timeval timeout = {0, 10000};
+    if( select( FD_SETSIZE, &read_fds, NULL, NULL, &timeout) <0 )
       error("ERROR on select");
     
     int act_fd;
