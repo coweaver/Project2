@@ -53,6 +53,9 @@ typedef struct node {
   int metric;
   int seq_n;
   time_t time;
+  int CCP_sockfd;
+  int search_ttl;
+  int search_interval;
 } node;
 
 
@@ -69,12 +72,13 @@ typedef struct adjacent_vertex{
 } adj_vert;
 
 typedef struct vertex{
+  uuid_t uuid;
   char *name;
   int len;
-  adj_vert *adjacencies[100];
+  adj_vert *adjacencies[20];
 }vertex;
 
-int num_nodes = 2;
+int num_nodes = 2; // only deals with naming
 /* Global - holds list of neighbors */
 node *neighbors[BUFSIZE];
 int num_neighbors;
@@ -83,7 +87,7 @@ int num_other_nodes;
 /* Global - defines local node characteristics */
 node *my_node;
 
-/* Global - holds the files and paths */
+/* Global - holds the files and locations */
 content_t dictionary[BUFSIZE];
 int d_index;
 
@@ -95,9 +99,15 @@ int num_flows;
 uint16_t global_bit_rate;
 
 
-/* Global - JSON string of network map */
+/* Global - network map struct*/
 vertex *map[BUFSIZE];
 int map_len;
+
+/* Global - Dijkstra distance table and update flag */
+char *names[BUFSIZE];
+int dist[BUFSIZE];
+int update_dijkstra = 1; // update when 1, good when 0
+
 
 void error(char *msg);
 
@@ -150,14 +160,36 @@ node *find_other_node(uuid_t uuid);
 
 int handle_keep_alive(char *uuid_c);
 
-int handle_link_state(char *data, uint16_t seq_n, uint16_t len);
+int handle_link_state(char *data, uint16_t seq_n, uint16_t len, uint8_t killed);
 
 int forward_link_state(char *data);
 
 void remove_neighbor(int index);
 
+void remove_map_node(int index);
+
+void remover_map_node_helpder(uuid_t uuid);
+
+void remove_other_node(int index);
+
 char *get_neighbor_metrics();
 
-int send_link_state();
+int send_link_state(uuid_t killed_uuid);
 
 int send_keep_alive(uint16_t CCP_portno);
+
+void dijkstra();
+
+void swap(adj_vert *a, adj_vert *b);
+
+int peer_rank(int connfd, char *uri, char *version);
+
+void fill_names();
+
+int get_index(char *name);
+
+int minDistance();
+
+adj_vert ***generate_graph(char **names);
+
+void remove_from_dictionary(uuid_t uuid);
