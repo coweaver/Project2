@@ -562,7 +562,7 @@ int handle_search_response(char *buf, int len){
   for(i = 0; i < peer_index; i++){
     found = 0;
     for(int k = 0; k < d_index; k++){
-      if( (uuid_compare(peers[i], dictionary[k]->uuid) == 0) && (strcmp(file, dictionary[k]->file) == 0)){
+      if((uuid_compare(peers[i], dictionary[k]->uuid) == 0)&&(strcmp(file, dictionary[k]->file) == 0)){
 	found = 1;
 	break;
       }
@@ -577,6 +577,7 @@ int handle_search_response(char *buf, int len){
       d_index++; 
     }
   }
+  return 0;
 }
 
 
@@ -623,12 +624,17 @@ int peer_search(int connfd, char *request, char *version){
   active_searches[num_searches] = new_search;
   
   send_search_packet(new_search, NULL); 
+  return 0;
+}
+
+int send_search_JSON(search_t *search){
+  return 0;
 }
 
 
 int send_search_packet(search_t *search, uuid_t sender){
   uuid_t peers[BUFSIZE];
-  int peer_index;
+  int peer_index=0;
   for (int i=0; i<d_index; i++){
     if (strcmp(search->file, dictionary[i]->file) == 0) {/* file found */
       uuid_copy(peers[peer_index], dictionary[i]->uuid);
@@ -641,7 +647,7 @@ int send_search_packet(search_t *search, uuid_t sender){
   }
   
 
-  uint8_t *flags;
+  uint8_t *flags = malloc(sizeof(uint8_t));
   node *node;
   if( sender == NULL ){
     int random_index = time(NULL)%num_neighbors;
@@ -655,7 +661,8 @@ int send_search_packet(search_t *search, uuid_t sender){
   char buf[BUFSIZE];
   uint16_t *len, *zero;;   
   
-
+  len = malloc(sizeof(uint16_t));
+  zero = malloc(sizeof(uint16_t));
   *len = sizeof(int) + 36 + 100 + 36*peer_index;
   
 
@@ -669,6 +676,11 @@ int send_search_packet(search_t *search, uuid_t sender){
   memcpy(buf+13, zero, 1);
   memcpy(buf+14, zero, 2);
   
+  free(len);
+  free(zero);
+  free(flags);
+
+
   char uuid_c[37];
   int k = sizeof(int);
   uuid_unparse(my_node->uuid, uuid_c);
@@ -698,18 +710,19 @@ int send_search_packet(search_t *search, uuid_t sender){
   int n = sendto(my_node->CCP_sockfd, buf, (size_t)len+16, 0, &partneraddr, sizeof(partneraddr));
   if (n< 0)
     error("ERROR ON SEND");   
+  return 0;
 }
 
 int receive_search_packet(char *packet, int len)
 {
   uuid_t sender;
-  int ttl;
+  int *ttl = malloc(sizeof(int));
   char file_name[100];
   uuid_t peers[BUFSIZE];
   int bytes = 36 + sizeof(int) + 100;
   int index = 0;
-  char sender_temp[36];
-  search_t *cur_search;
+  char sender_temp[36], temp[36];
+  search_t *cur_search = NULL;
 
   memcpy(sender_temp, packet, 36);
   memcpy(ttl, packet+36, 4);
@@ -725,31 +738,39 @@ int receive_search_packet(char *packet, int len)
 	  break;
 	}
     }
-  if (cur_search == null)
+  if (cur_search == NULL)
     {
       cur_search = malloc(sizeof(search_t));
       cur_search->file = malloc(100);
-      strcpy(cur_search->file, file);
-      cur_search->ttl = ttl;
+      strcpy(cur_search->file, file_name);
+      cur_search->ttl = *ttl;
       cur_search->time = time(NULL);
     }
   while (bytes < len)
     {
-      memcpy(temp, *(packet + bytes), 36);
+      memcpy(temp, packet + bytes, 36);
       uuid_parse(temp, peers[index]);
       bytes += sizeof(uuid_t);
       index++;
     }
-  for (i=0; i<d_index; i++){
+  for (int i=0; i<d_index; i++){
     if (strcmp(file_name, dictionary[i]->file) == 0) {/* file found */
-      if (!already_in(peers, dictionary[i]->uuid), peers_index)
+      if (!already_in(peers, dictionary[i]->uuid, index))
 	{
 	  uuid_copy(peers[index], dictionary[i]->uuid);
-	  peer_index++;
+	  index++;
 	}
     }
   }
   send_search_packet(cur_search, sender);
+  return 0;
+}
+
+int already_in(uuid_t *peers, uuid_t id, int index){
+  for (int i=0; i<index; i++)
+    {
+      if (peers[i] == id) return 1;
+    }
   return 0;
 }
 
@@ -1154,6 +1175,9 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
 }
 
 
+int have_file(char *file){
+  return 0;
+}
 
 
 
@@ -1209,7 +1233,7 @@ int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, 
     handle_link_state(buf, *seq_n, *len, 1);
     return 1;
   }if(buf[12] == (char)0x04){
-    handle_search_packet(buf+16, *len); 
+    receive_search_packet(buf+16, *len); 
     return 1;
   }if(buf[12] == (char)0x05){
     handle_search_response(buf+16, *len);

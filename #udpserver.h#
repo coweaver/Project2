@@ -213,7 +213,7 @@ void remove_active_search(char *file);
 
 int handle_search_response(char *buf, int len);
 
-int recieve_search_packet(char *buf, int len);
+int receive_search_packet(char *buf, int len);
 
 int have_file(char *file);
 
