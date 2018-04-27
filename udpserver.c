@@ -4,6 +4,8 @@
  */
 
 
+
+#include <dirent.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -616,7 +618,10 @@ int peer_search(int connfd, char *request, char *version){
   search_t *new_search = malloc(sizeof(search_t));
   
   new_search->file = malloc(100);
+  new_search->version = malloc(100);
   strcpy(new_search->file, file);
+  strcpy(new_search->version, version);
+  
   new_search->ttl = my_node->search_ttl;
   new_search->client = connfd;
   new_search->time = time(NULL);
@@ -628,6 +633,46 @@ int peer_search(int connfd, char *request, char *version){
 }
 
 int send_search_JSON(search_t *search){
+  uuid_t peers[BUFSIZE];
+  int peer_index=0;
+  for (int i=0; i<d_index; i++){
+    if (strcmp(search->file, dictionary[i]->file) == 0) {/* file found */
+      uuid_copy(peers[peer_index], dictionary[i]->uuid);
+      peer_index++;
+    }
+  }
+  if( have_file(search->file) ){
+    uuid_copy(peers[peer_index], my_node->uuid);
+    peer_index++;
+  }
+
+  char buf[BUFSIZE];
+  bzero(buf,BUFSIZE);
+  sprintf(buf, "[{\"content\":\"%s\",\"peers\":[", search->file);
+  for(int i=0; i<peer_index; i++){
+    if(i != 0)
+      sprintf(buf, "%s,", buf);
+    sprintf(buf, "%s\"%s\"", buf, peers[peer_index]);
+  }
+
+  
+  char header[BUFSIZE];
+
+  sprintf(header, "%s 200 OK\r\n", search->version);
+  sprintf(header, "%sContent-type: application/json\r\n", header);
+  sprintf(header, "%sContent-length: %lu\r\n", header, strlen(buf));
+  sprintf(header, "%s%s\r\n", header, print_time());
+  sprintf(header, "%sConnection: Close\r\n", header);
+  sprintf(header, "%sAccept-Ranges: bytes\r\n\r\n", header);
+
+  int n = write(search->client, header, strlen(header));
+  if(n < 0){
+    error("ERROR on write");
+  }
+  n = write(search->client, buf, strlen(buf));
+  if(n<0){
+    error("ERROR on write");
+  }
   return 0;
 }
 
@@ -745,6 +790,7 @@ int receive_search_packet(char *packet, int len)
       strcpy(cur_search->file, file_name);
       cur_search->ttl = *ttl;
       cur_search->time = time(NULL);
+      cur_search->client = 0;
     }
   while (bytes < len)
     {
@@ -1176,6 +1222,14 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
 
 
 int have_file(char *file){
+  DIR *mydir;
+  struct dirent *myfile;
+  mydir = opendir(my_node->content_dir);
+  while( (myfile = readdir(mydir)) != NULL){
+    if(strcmp(myfile->d_name,file)==0){
+      return 1;
+    }
+  }
   return 0;
 }
 
@@ -1872,6 +1926,7 @@ int main(int argc, char **argv) {
   int search_ttl, search_interval;
   char key[100], val[100];
   node_name = (char *)malloc(100);
+  content_dir = (char *)malloc(100);
   while(fgets(buf, BUFSIZE, config_fd) != NULL){
     
     sscanf(buf, "%s = %[^\n]", key, val);
@@ -1940,6 +1995,7 @@ int main(int argc, char **argv) {
   my_node = (node *)malloc(sizeof(struct node));
   uuid_copy(my_node->uuid, uuid);
   my_node->name = node_name;
+  my_node->content_dir = content_dir;
   my_node->front_port = HTTP_portno;
   my_node->back_port = CCP_portno;
   my_node->seq_n = 1;
@@ -2053,11 +2109,13 @@ int main(int argc, char **argv) {
       {
 	if (cur_search_time - active_searches[i]->time > my_node->search_interval) {
 	  if(active_searches[i]->ttl == 0){
-	    send_search_JSON(active_searches[i]);
+	    if(active_searches[i]->client != 0)
+	      send_search_JSON(active_searches[i]);
 	    remove_active_search(active_searches[i]->file);
 	  }else{
 	    active_searches[i]->ttl--;
 	    send_search_packet(active_searches[i], NULL);
+	    active_searches[i]->time = time(NULL);
 	  }
 	}
       }

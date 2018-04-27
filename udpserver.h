@@ -47,6 +47,7 @@ typedef struct active_flow {
 typedef struct node {
   uuid_t uuid;
   char *name;
+  char *content_dir;
   char *host;
   uint16_t front_port;
   uint16_t back_port;
@@ -81,8 +82,9 @@ typedef struct vertex{
 typedef struct search{
   char* file;
   int ttl;
-  int client;
   time_t time;
+  int client;
+  char* version;
 }search_t;
 
 int num_nodes = 2; // only deals with naming
@@ -213,7 +215,7 @@ void remove_active_search(char *file);
 
 int handle_search_response(char *buf, int len);
 
-int recieve_search_packet(char *buf, int len);
+int receive_search_packet(char *buf, int len);
 
 int have_file(char *file);
 
