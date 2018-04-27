@@ -78,6 +78,13 @@ typedef struct vertex{
   adj_vert *adjacencies[20];
 }vertex;
 
+typedef struct search{
+  char* file;
+  int ttl;
+  int client;
+  time_t time;
+}search_t;
+
 int num_nodes = 2; // only deals with naming
 /* Global - holds list of neighbors */
 node *neighbors[BUFSIZE];
@@ -107,6 +114,10 @@ int map_len;
 char *names[BUFSIZE];
 int dist[BUFSIZE];
 int update_dijkstra = 1; // update when 1, good when 0
+
+/* Global - holds all the active searches of the node*/
+search_t *active_searches[BUFSIZE];
+int num_searches;
 
 
 void error(char *msg);
@@ -193,3 +204,15 @@ int minDistance();
 adj_vert ***generate_graph(char **names);
 
 void remove_from_dictionary(uuid_t uuid);
+
+int send_search_packet(search_t *search, uuid_t sender);
+
+int peer_search(int connfd, char *request, char *version);
+
+void remove_active_search(char *file);
+
+int handle_search_response(char *buf, int len);
+
+int handle_search_packet(char *buf, int len);
+
+int have_file(char *file);

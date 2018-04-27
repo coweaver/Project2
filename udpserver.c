@@ -328,7 +328,7 @@ int peer_map(int connfd, char *version){
 void remove_from_dictionary(uuid_t uuid){
   int shift = 0;
   for(int i = 0; i<d_index; i++){
-    if( uuid_compare(dictionary[i].uuid, uuid) == 0){
+    if( uuid_compare(dictionary[i]->uuid, uuid) == 0){
       shift += 1;
       free(dictionary[i]->file);
       free(dictionary[i]->brate);
@@ -543,6 +543,217 @@ int send_keep_alive(uint16_t CCP_portno)
   }
   return 0;
 }
+
+int handle_search_response(char *buf, int len){
+  char file[100], uuid_c[37];
+  int location = 68;
+  uuid_t peers[BUFSIZE];
+  memcpy(file, buf+location, 100);
+  location += 100;
+  int i =0;
+  while(location < len){
+    memcpy(uuid_c, buf+location, 36);
+    uuid_parse(uuid_c, peers[i]);
+    i += 1;
+    location += 36;
+  }
+  int peer_index=i;
+  int found;
+  for(i = 0; i < peer_index; i++){
+    found = 0;
+    for(int k = 0; k < d_index; k++){
+      if( (uuid_compare(peers[i], dictionary[k]->uuid) == 0) && (strcmp(file, dictionary[k]->file) == 0)){
+	found = 1;
+	break;
+      }
+    }
+    if(!found){
+      dictionary[d_index] = (content_t)malloc(sizeof(struct content));
+      dictionary[d_index]->file = malloc(strlen(file));
+
+      uuid_copy(dictionary[d_index]->uuid,  peers[i]);
+      memcpy( dictionary[d_index]->file, file, strlen(file));
+      dictionary[d_index]->brate = NULL;
+      d_index++; 
+    }
+  }
+}
+
+
+void remove_active_search(char *file){
+  int i,found;
+  search_t *search;
+  for(i = 0; i < num_searches; i++){
+    if( strcmp(file, active_searches[i]->file) == 0){
+      found = 1;
+      search = active_searches[i];
+    }else if(found){
+      active_searches[i-1] = active_searches[i];
+      active_searches[i] = NULL;
+    }
+  }
+  if(!found){
+    return;
+  }
+  free(search->file);
+  free(search);
+  num_searches -= 1;
+}
+
+int peer_search(int connfd, char *request, char *version){
+  char buf[BUFSIZE];
+  sprintf(buf, "%s 200 OK\r\n", version);
+  
+  int n = write(connfd, buf, strlen(buf));
+  if(n < 0){
+    error("ERROR on write");
+  }
+
+  char file[BUFSIZE];
+  sscanf(request, "/peer/search/%s", file);
+  
+  search_t *new_search = malloc(sizeof(search_t));
+  
+  new_search->file = malloc(100);
+  strcpy(new_search->file, file);
+  new_search->ttl = my_node->search_ttl;
+  new_search->client = connfd;
+  new_search->time = time(NULL);
+  
+  active_searches[num_searches] = new_search;
+  
+  send_search_packet(new_search, NULL); 
+}
+
+
+int send_search_packet(search_t *search, uuid_t sender){
+  uuid_t peers[BUFSIZE];
+  int peer_index;
+  for (int i=0; i<d_index; i++){
+    if (strcmp(search->file, dictionary[i]->file) == 0) {/* file found */
+      uuid_copy(peers[peer_index], dictionary[i]->uuid);
+      peer_index++;
+    }
+  }
+  if( have_file(search->file) ){
+    uuid_copy(peers[peer_index], my_node->uuid);
+    peer_index++;
+  }
+  
+
+  uint8_t *flags;
+  node *node;
+  if( sender == NULL ){
+    int random_index = time(NULL)%num_neighbors;
+    node = neighbors[random_index];
+    *flags = 0x04;
+  }else{
+    node = find_neighbor(sender);
+    *flags = 0x05;
+  }
+  
+  char buf[BUFSIZE];
+  uint16_t *len, *zero;;   
+  
+
+  *len = sizeof(int) + 36 + 100 + 36*peer_index;
+  
+
+  memcpy(buf, &(my_node->back_port), 2);
+  memcpy(buf+2, &(node->back_port), 2);
+  memcpy(buf+4, zero, 2);
+  memcpy(buf+6, zero, 2);
+  memcpy(buf+8, len, 2);
+  memcpy(buf+10, zero, 2);
+  memcpy(buf+12, flags, 1);
+  memcpy(buf+13, zero, 1);
+  memcpy(buf+14, zero, 2);
+  
+  char uuid_c[37];
+  int k = sizeof(int);
+  uuid_unparse(my_node->uuid, uuid_c);
+  memcpy(buf+16, uuid_c, 36);
+  memcpy(buf+52, &(search->ttl), sizeof(int));
+  memcpy(buf+52+k, &(search->file), strlen(search->file));
+  
+  char *location = buf+52+k;
+  for(int i = 0; i < peer_index; i++){
+    location += 36;
+    uuid_parse(uuid_c, peers[i]);
+    memcpy(location, uuid_c, 36);
+  }
+
+  struct sockaddr_in partneraddr;
+  struct hostent *server = gethostbyname(node->host);
+  if(server == NULL){
+    fprintf(stderr, "ERROR, no such host as %s\n", node->host);
+    exit(0);
+  }
+  bzero((char *) &partneraddr, sizeof(partneraddr));
+  partneraddr.sin_family = AF_INET;
+  bcopy((char *)server->h_addr,
+	(char *)&partneraddr.sin_addr.s_addr, server->h_length);
+  partneraddr.sin_port = htons((unsigned short)node->back_port);
+
+  int n = sendto(my_node->CCP_sockfd, buf, (size_t)len+16, 0, &partneraddr, sizeof(partneraddr));
+  if (n< 0)
+    error("ERROR ON SEND");   
+}
+
+int receive_search_packet(char *packet, int len)
+{
+  uuid_t sender;
+  int ttl;
+  char file_name[100];
+  uuid_t peers[BUFSIZE];
+  int bytes = 36 + sizeof(int) + 100;
+  int index = 0;
+  char sender_temp[36];
+  search_t *cur_search;
+
+  memcpy(sender_temp, packet, 36);
+  memcpy(ttl, packet+36, 4);
+  memcpy(file_name, packet+40, 100);
+
+  uuid_parse(sender_temp, sender);
+
+  for (int i=0; i<num_searches; i++)
+    {
+      if (strcmp(file_name, active_searches[i]->file) == 0) //already exits
+	{
+	  cur_search = active_searches[i];
+	  break;
+	}
+    }
+  if (cur_search == null)
+    {
+      cur_search = malloc(sizeof(search_t));
+      cur_search->file = malloc(100);
+      strcpy(cur_search->file, file);
+      cur_search->ttl = ttl;
+      cur_search->time = time(NULL);
+    }
+  while (bytes < len)
+    {
+      memcpy(temp, *(packet + bytes), 36);
+      uuid_parse(temp, peers[index]);
+      bytes += sizeof(uuid_t);
+      index++;
+    }
+  for (i=0; i<d_index; i++){
+    if (strcmp(file_name, dictionary[i]->file) == 0) {/* file found */
+      if (!already_in(peers, dictionary[i]->uuid), peers_index)
+	{
+	  uuid_copy(peers[index], dictionary[i]->uuid);
+	  peer_index++;
+	}
+    }
+  }
+  send_search_packet(cur_search, sender);
+  return 0;
+}
+
+
 
 
 int peer_view(int connfd, char *request, char *version, int CCP_sockfd)
@@ -809,7 +1020,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   af->start = clock();
   n = sendto(CCP_sockfd, buf, len+16, 0, &partneraddr, serverlen);
   if (n< 0)
-    error("THAT SHIT DIDNT WORK"); 
+    error("ERROR ON SEND"); 
   
   af->my_seq_n += 1;
   flows[num_flows] = af;
@@ -997,8 +1208,14 @@ int CCP_parse_header(char buf[], char data[], uint16_t *source, uint16_t *dest, 
   }if(buf[12] == (char)0x03){
     handle_link_state(buf, *seq_n, *len, 1);
     return 1;
+  }if(buf[12] == (char)0x04){
+    handle_search_packet(buf+16, *len); 
+    return 1;
+  }if(buf[12] == (char)0x05){
+    handle_search_response(buf+16, *len);
+    return 1;
   }
-  
+		      
   if(buf[12] == (char)0xC0){ // 0xC0 = 1100
     //printf("ACK SYN\n");
     *ack = 1;
@@ -1172,9 +1389,9 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
   char data[PACKETSIZE];
 
   int k = CCP_parse_header(buf, data, &source, &dest, &seq_n, &ack_n, &len, &win_size, &ack, &syn, &fin, &chk_sum, &id);
-  if( k == 1)
+  if( k == 1)// link state or search
     return 0;
-
+      
   if(!ack){
     if(syn){
       //printf("NEW FLOW: %d\n", id);
@@ -1628,7 +1845,7 @@ int main(int argc, char **argv) {
   HTTP_portno = 0;
   CCP_portno = 0;
 
-  int search__ttl, search_interval;
+  int search_ttl, search_interval;
   char key[100], val[100];
   node_name = (char *)malloc(100);
   while(fgets(buf, BUFSIZE, config_fd) != NULL){
@@ -1785,6 +2002,7 @@ int main(int argc, char **argv) {
   int first = 0;
   while (1) {
     time_t cur_time = time(NULL);
+    
     if (cur_time - my_time >10){
       if(first < 3){ // ADVERTISE LINK-STATE EEVERY 10 seconds for 30 seconds after booting
 	send_link_state(0);
@@ -1806,7 +2024,20 @@ int main(int argc, char **argv) {
 	} 
       }
     }
-      
+    time_t cur_search_time = time(NULL);
+    for (i=0; i<num_searches; i++)
+      {
+	if (cur_search_time - active_searches[i]->time > my_node->search_interval) {
+	  if(active_searches[i]->ttl == 0){
+	    send_search_JSON(active_searches[i]);
+	    remove_active_search(active_searches[i]->file);
+	  }else{
+	    active_searches[i]->ttl--;
+	    send_search_packet(active_searches[i], NULL);
+	  }
+	}
+      }
+     
     read_fds = active_fds;
     struct timeval timeout = {0, 10000};
     if( select( FD_SETSIZE, &read_fds, NULL, NULL, &timeout) <0 )
