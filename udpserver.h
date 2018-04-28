@@ -1,9 +1,7 @@
-/*                                                                                                           
- * udpserver.h - A front-end HTTP server with CCP backend.                                     
+/*                                                                                                 * udpserver.h - A front-end HTTP server with CCP backend.                                     
  */
 
-
-
+#include <dirent.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -85,7 +83,15 @@ typedef struct search{
   time_t time;
   int client;
   char* version;
+  int peer_index;
+  uuid_t peers[BUFSIZE];
 }search_t;
+
+
+
+/* Global- Buffer */
+char buf[BUFSIZE];
+
 
 int num_nodes = 2; // only deals with naming
 /* Global - holds list of neighbors */

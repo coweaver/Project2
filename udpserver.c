@@ -60,10 +60,10 @@ node *find_other_node(uuid_t uuid){
 }
 
 node *new_other_node(uuid_t uuid){
-  node *n = (node *)malloc(sizeof(struct node));
+  node *n = malloc(sizeof(struct node));
   uuid_copy(n->uuid,uuid);
   n->seq_n = 0;
-  char *name = (char *)malloc(10);
+  char *name = malloc(10);
   sprintf(name, "node_%d", num_nodes); 
   num_nodes += 1;
   n->name = name;
@@ -149,9 +149,9 @@ int peer_add(int connfd, char *request, char *version)
   int n;
  
 
-  file = (char *)malloc(100);
-  uuid_c = (char *)malloc(100);
-  rate = (char *)malloc(100);
+  file = malloc(100);
+  uuid_c = malloc(100);
+  rate = malloc(100);
 
   if( strstr(request, "rate") == NULL ){
     rate = "";
@@ -186,7 +186,7 @@ int peer_add(int connfd, char *request, char *version)
     return -1;
   }
 
-  dictionary[d_index] = (content_t)malloc(sizeof(struct content));
+  dictionary[d_index] = malloc(sizeof(struct content));
 
   uuid_parse(uuid_c, dictionary[d_index]->uuid);
   dictionary[d_index]->file = file;
@@ -205,11 +205,11 @@ int peer_add(int connfd, char *request, char *version)
 int peer_addNeighbor(int connfd, char *request, char *version){
   char name[10], *uuid, *host, *frontend, *backend, *metric, key[100], val[100];
     
-  uuid = (char *)malloc(100);
-  host = (char *)malloc(100);
-  frontend = (char *)malloc(100);
-  backend = (char *)malloc(100);
-  metric =  (char *)malloc(100);
+  uuid = malloc(100);
+  host = malloc(100);
+  frontend = malloc(100);
+  backend = malloc(100);
+  metric =  malloc(100);
   
   bzero(key, 100);
   bzero(val, 100);
@@ -250,10 +250,10 @@ int peer_addNeighbor(int connfd, char *request, char *version){
 
 
 
-  neighbors[num_neighbors] = (node *)malloc(sizeof(struct node));
+  neighbors[num_neighbors] = malloc(sizeof(struct node));
   sprintf(name, "node_%d", num_nodes); 
-  neighbors[num_neighbors]->name = (char *)malloc(strlen(name));
-  neighbors[num_neighbors]->host = (char *)malloc(strlen(host));
+  neighbors[num_neighbors]->name = malloc(strlen(name));
+  neighbors[num_neighbors]->host = malloc(strlen(host));
 
 
   strcpy(neighbors[num_neighbors]->host,host);
@@ -402,6 +402,9 @@ void remove_map_node(int index){
     {
       map[i] = map[i+1];
     }
+  for(int i=0; i<v->len; i++){
+    free(v->adjacencies[i]);
+  }
   free(v);
   num_neighbors -= 1;
   return;
@@ -411,7 +414,7 @@ void remove_map_node(int index){
 //returns JSON String
 char *get_neighbor_metrics()
 {
-  char *buf = (char *)malloc(BUFSIZE);
+  char *buf = malloc(BUFSIZE);
   char uuid[100];
   node *cur_node;
   
@@ -547,18 +550,24 @@ int send_keep_alive(uint16_t CCP_portno)
 }
 
 int handle_search_response(char *buf, int len){
-  char file[100], uuid_c[37];
-  int location = 68;
+  printf("Handling search response\n");
+  char file[100], uuid_c[36];
+  int location = 40;
   uuid_t peers[BUFSIZE];
+
   memcpy(file, buf+location, 100);
+  printf("file: %s\n", file);
   location += 100;
   int i =0;
   while(location < len){
     memcpy(uuid_c, buf+location, 36);
+    printf("uuid: %s\n", uuid_c);
     uuid_parse(uuid_c, peers[i]);
     i += 1;
     location += 36;
   }
+  printf("Peers length: %d\n", i);
+
   int peer_index=i;
   int found;
   for(i = 0; i < peer_index; i++){
@@ -569,21 +578,29 @@ int handle_search_response(char *buf, int len){
 	break;
       }
     }
-    if(!found){
-      dictionary[d_index] = (content_t)malloc(sizeof(struct content));
+    if(!found && (uuid_compare(peers[i], my_node->uuid) != 0)){
+      printf("Adding to dictionary\n");
+      dictionary[d_index] = malloc(sizeof(struct content));
       dictionary[d_index]->file = malloc(strlen(file));
 
       uuid_copy(dictionary[d_index]->uuid,  peers[i]);
       memcpy( dictionary[d_index]->file, file, strlen(file));
-      dictionary[d_index]->brate = NULL;
       d_index++; 
+
+
+      bzero(uuid_c, 36);
+      uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+      printf("dictionary[%d]->file: %s, ->uuid: %s",d_index-1, dictionary[d_index-1]->file, uuid_c);
+	
     }
   }
+  printf("DONE w/ response\n");
   return 0;
 }
 
 
 void remove_active_search(char *file){
+  printf("I AM BEING REMOVED\n");
   int i,found;
   search_t *search;
   for(i = 0; i < num_searches; i++){
@@ -598,15 +615,15 @@ void remove_active_search(char *file){
   if(!found){
     return;
   }
-  free(search->file);
-  free(search);
   num_searches -= 1;
 }
 
 int peer_search(int connfd, char *request, char *version){
+  printf("Sending 200 ok\n");
   char buf[BUFSIZE];
   sprintf(buf, "%s 200 OK\r\n", version);
-  
+  sprintf(buf, "%sContent-type: application/json\r\n", buf);
+
   int n = write(connfd, buf, strlen(buf));
   if(n < 0){
     error("ERROR on write");
@@ -627,12 +644,15 @@ int peer_search(int connfd, char *request, char *version){
   new_search->time = time(NULL);
   
   active_searches[num_searches] = new_search;
+  num_searches++;
   
+  printf("Sending search packet... \n");
   send_search_packet(new_search, NULL); 
   return 0;
 }
 
 int send_search_JSON(search_t *search){
+  printf("Sending search JSON\n");
   uuid_t peers[BUFSIZE];
   int peer_index=0;
   for (int i=0; i<d_index; i++){
@@ -645,24 +665,27 @@ int send_search_JSON(search_t *search){
     uuid_copy(peers[peer_index], my_node->uuid);
     peer_index++;
   }
+  printf("preparing BUF\n");
 
   char buf[BUFSIZE];
   bzero(buf,BUFSIZE);
+
   sprintf(buf, "[{\"content\":\"%s\",\"peers\":[", search->file);
+  char uuid_c[36];
   for(int i=0; i<peer_index; i++){
     if(i != 0)
       sprintf(buf, "%s,", buf);
-    sprintf(buf, "%s\"%s\"", buf, peers[peer_index]);
+    uuid_unparse(peers[i], uuid_c);
+    sprintf(buf, "%s\"%s\"", buf, uuid_c);
   }
+  sprintf(buf, "%s]}]", buf);
 
-  
+  printf("preparing HEADER\n");
   char header[BUFSIZE];
 
-  sprintf(header, "%s 200 OK\r\n", search->version);
-  sprintf(header, "%sContent-type: application/json\r\n", header);
   sprintf(header, "%sContent-length: %lu\r\n", header, strlen(buf));
   sprintf(header, "%s%s\r\n", header, print_time());
-  sprintf(header, "%sConnection: Close\r\n", header);
+  sprintf(header, "%sConnection: Keep-Alive\r\n", header);
   sprintf(header, "%sAccept-Ranges: bytes\r\n\r\n", header);
 
   int n = write(search->client, header, strlen(header));
@@ -680,12 +703,30 @@ int send_search_JSON(search_t *search){
 int send_search_packet(search_t *search, uuid_t sender){
   uuid_t peers[BUFSIZE];
   int peer_index=0;
+  char uuid_c[36];
+  printf("building peers\n");
+  
+  if(d_index > 0){
+    bzero(uuid_c, 36);
+    uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+    printf("dictionary[%d]->file: %s, ->uuid: %s\n",d_index-1, dictionary[d_index-1]->file, uuid_c);
+  }
   for (int i=0; i<d_index; i++){
     if (strcmp(search->file, dictionary[i]->file) == 0) {/* file found */
       uuid_copy(peers[peer_index], dictionary[i]->uuid);
       peer_index++;
     }
   }
+
+  
+  if(d_index>0){
+    char uuid_c[36];
+    bzero(uuid_c, 36);
+    uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+    printf("dictionary[%d]->file: %s, ->uuid: %s\n",d_index-1, dictionary[d_index-1]->file, uuid_c);
+  }
+
+  printf("checking ./content/\n");
   if( have_file(search->file) ){
     uuid_copy(peers[peer_index], my_node->uuid);
     peer_index++;
@@ -694,22 +735,32 @@ int send_search_packet(search_t *search, uuid_t sender){
 
   uint8_t *flags = malloc(sizeof(uint8_t));
   node *node;
+  printf("choosing receiver\n");
   if( sender == NULL ){
     int random_index = time(NULL)%num_neighbors;
     node = neighbors[random_index];
     *flags = 0x04;
   }else{
+    char uuid_sender[36];
+    uuid_unparse(sender, uuid_sender);
+    printf("sender uuid: %s\n", uuid_sender);
     node = find_neighbor(sender);
     *flags = 0x05;
   }
+  if(node == NULL){
+    printf("NO NODE\n");
+  }
+
   
   char buf[BUFSIZE];
+  bzero(buf,BUFSIZE);
   uint16_t *len, *zero;;   
   
   len = malloc(sizeof(uint16_t));
   zero = malloc(sizeof(uint16_t));
-  *len = sizeof(int) + 36 + 100 + 36*peer_index;
+  *len = 36 + 4 + 100 + 36*peer_index; //uuid+TTL+file+peer_uuids
   
+  printf("Building packet\n");
 
   memcpy(buf, &(my_node->back_port), 2);
   memcpy(buf+2, &(node->back_port), 2);
@@ -721,57 +772,98 @@ int send_search_packet(search_t *search, uuid_t sender){
   memcpy(buf+13, zero, 1);
   memcpy(buf+14, zero, 2);
   
-  free(len);
-  free(zero);
-  free(flags);
 
 
-  char uuid_c[37];
+  bzero(uuid_c, 36);
   int k = sizeof(int);
   uuid_unparse(my_node->uuid, uuid_c);
+  printf("uuid: %s, ", uuid_c);
   memcpy(buf+16, uuid_c, 36);
+  printf("ttl: %d, ", search->ttl);
   memcpy(buf+52, &(search->ttl), sizeof(int));
-  memcpy(buf+52+k, &(search->file), strlen(search->file));
+  printf("file: %s, \n", search->file);
+  memcpy(buf+52+k, search->file, strlen(search->file));
   
-  char *location = buf+52+k;
+
+
+  char *location = buf+156;
+  printf("Adding peers\n");
   for(int i = 0; i < peer_index; i++){
-    location += 36;
-    uuid_parse(uuid_c, peers[i]);
+    uuid_unparse(peers[i], uuid_c);
+    printf("%s\n", uuid_c);
     memcpy(location, uuid_c, 36);
+    location += 36;
   }
 
+  char uuid_check[36];
+  if(d_index>0){
+    bzero(uuid_check, 36);
+    uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+    printf("dictionary[%d]->file: %s, ->uuid: %s\n",d_index-1, dictionary[d_index-1]->file, uuid_c);
+  }
+  
+  printf("Sending...\n");
+ 
   struct sockaddr_in partneraddr;
   struct hostent *server = gethostbyname(node->host);
   if(server == NULL){
     fprintf(stderr, "ERROR, no such host as %s\n", node->host);
     exit(0);
   }
+
+  if(d_index>0){
+    uuid_parse(uuid_c, dictionary[d_index-1]->uuid);
+   
+    bzero(uuid_check, 36);
+    uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+    printf("dictionary[%d]->file: %s, ->uuid: %s\n",d_index-1, dictionary[d_index-1]->file, uuid_c);
+  }
+
   bzero((char *) &partneraddr, sizeof(partneraddr));
   partneraddr.sin_family = AF_INET;
   bcopy((char *)server->h_addr,
 	(char *)&partneraddr.sin_addr.s_addr, server->h_length);
   partneraddr.sin_port = htons((unsigned short)node->back_port);
-
-  int n = sendto(my_node->CCP_sockfd, buf, (size_t)len+16, 0, &partneraddr, sizeof(partneraddr));
+  
+  printf("%d\n", my_node->CCP_sockfd);
+  int n = sendto(my_node->CCP_sockfd, buf, (size_t)(*len)+16, 0, 
+		 (struct sockaddr *)&partneraddr, sizeof(partneraddr));
   if (n< 0)
     error("ERROR ON SEND");   
+  printf("Sent\n");
+
+  free(len);
+  free(flags);
+  free(zero);
+
   return 0;
+
 }
 
 int receive_search_packet(char *packet, int len)
 {
+  
+  printf("Recieved search packet: %s\n", packet);
   uuid_t sender;
   int *ttl = malloc(sizeof(int));
   char file_name[100];
+  bzero(file_name, 100);
   uuid_t peers[BUFSIZE];
-  int bytes = 36 + sizeof(int) + 100;
+
   int index = 0;
   char sender_temp[36], temp[36];
   search_t *cur_search = NULL;
 
+  bzero(sender_temp, 36);
   memcpy(sender_temp, packet, 36);
+  printf("sender_temp: %s\n", sender_temp);
+
   memcpy(ttl, packet+36, 4);
+  printf("ttl:%d\n", *ttl);
+
   memcpy(file_name, packet+40, 100);
+
+  printf("search for: %s\n", file_name);
 
   uuid_parse(sender_temp, sender);
 
@@ -788,17 +880,55 @@ int receive_search_packet(char *packet, int len)
       cur_search = malloc(sizeof(search_t));
       cur_search->file = malloc(100);
       strcpy(cur_search->file, file_name);
-      cur_search->ttl = *ttl;
+      cur_search->ttl = *ttl-1;
       cur_search->time = time(NULL);
       cur_search->client = 0;
     }
+  printf("file_name: %s\n", file_name);
+  printf("file: %s\n", cur_search->file);
+  
+  free(ttl);
+  
+  int bytes = 140;
   while (bytes < len)
     {
       memcpy(temp, packet + bytes, 36);
+      printf("uuid: %s\n", temp);
       uuid_parse(temp, peers[index]);
-      bytes += sizeof(uuid_t);
+      bytes += 36;
       index++;
     }
+
+  printf("Peers Index = %d\n", index);
+  int found = 0;
+  for(int i=0; i<index; i++){
+    char uuid_c[36];
+    uuid_unparse(peers[i], uuid_c);
+    printf("%d: %s\n", i, uuid_c);
+    found = 0;
+    for(int j=0; j<d_index; j++){
+      uuid_unparse(dictionary[j]->uuid, uuid_c);
+      printf("comparing: %s\n", uuid_c);
+      if(uuid_compare(peers[i], dictionary[j]->uuid) == 0 &&
+	 strcmp(file_name, dictionary[j]->file) == 0){
+	found = 1;
+	break;
+      }
+    }
+    if(!found && (uuid_compare(peers[i], my_node->uuid) != 0)){
+      printf("Adding to dictionary\n");
+      dictionary[d_index] = malloc(sizeof(content_t));
+      dictionary[d_index]->file = malloc(100);
+      uuid_copy(dictionary[d_index]->uuid, peers[i]);
+      strcpy(dictionary[d_index]->file, file_name);
+      d_index++;
+      
+      bzero(uuid_c, 36);
+      uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+      printf("dictionary[%d]->file: %s, ->uuid: %s\n",d_index-1, dictionary[d_index-1]->file, uuid_c);
+    }
+  }
+  
   for (int i=0; i<d_index; i++){
     if (strcmp(file_name, dictionary[i]->file) == 0) {/* file found */
       if (!already_in(peers, dictionary[i]->uuid, index))
@@ -808,14 +938,21 @@ int receive_search_packet(char *packet, int len)
 	}
     }
   }
+  if(!already_in(peers, my_node->uuid, index) && have_file(cur_search->file)){
+    uuid_copy(peers[index], my_node->uuid);
+    index++;
+  }
+
+
   send_search_packet(cur_search, sender);
   return 0;
 }
 
 int already_in(uuid_t *peers, uuid_t id, int index){
+  if(uuid_compare(id, my_node->uuid) == 0) return 1;
   for (int i=0; i<index; i++)
     {
-      if (peers[i] == id) return 1;
+      if (uuid_compare(peers[i], id) == 0) return 1;
     }
   return 0;
 }
@@ -969,7 +1106,9 @@ int get_request(int connfd, char *request, int CCP_sockfd, uuid_t uuid)
     peer_map(connfd, version);
   }else if (strstr(uri, "rank")) {
     peer_rank(connfd, uri, version);
-  }else { /*not a valid get request*/
+  }else if (strstr(uri, "search")) {
+    peer_search(connfd, uri, version);
+  } else { /*not a valid get request*/
     //printf("Invalid GET");
     return -1;
   }
@@ -1036,7 +1175,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
 
   //printf("\n\n\nStarting send_CCP_request\n\n\n");
 
-  af = (active_flow *)malloc(sizeof(active_flow));
+  af = malloc(sizeof(active_flow));
   node *node = find_neighbor(file->uuid);
   
   af->destport = node->back_port;
@@ -1085,7 +1224,7 @@ int send_CCP_request(int connfd, content_t file, int CCP_sockfd){
   
   int serverlen = sizeof(partneraddr);
   af->start = clock();
-  n = sendto(CCP_sockfd, buf, len+16, 0, &partneraddr, serverlen);
+  n = sendto(CCP_sockfd, buf, len+16, 0, (struct sockaddr *)&partneraddr, serverlen);
   if (n< 0)
     error("ERROR ON SEND"); 
   
@@ -1224,12 +1363,15 @@ int send_CCP_data(active_flow *flow, int CCP_sockfd){
 int have_file(char *file){
   DIR *mydir;
   struct dirent *myfile;
+  printf("directory: %s\n", my_node->content_dir); 
   mydir = opendir(my_node->content_dir);
   while( (myfile = readdir(mydir)) != NULL){
-    if(strcmp(myfile->d_name,file)==0){
+    if(strcmp(myfile->d_name, file)==0){
+      printf("found\n");
       return 1;
     }
   }
+  printf("not found\n");
   return 0;
 }
 
@@ -1385,7 +1527,7 @@ int handle_link_state(char *data, uint16_t seq_n, uint16_t len, uint8_t killed){
     }
   }
   
-  vertex *v = (vertex *)malloc(sizeof(vertex));
+  vertex *v = malloc(sizeof(vertex));
   uuid_copy(v->uuid, n->uuid);
   v->name = n->name;
   data = data+37; // removes uuid and { from JSON string
@@ -1407,7 +1549,7 @@ int handle_link_state(char *data, uint16_t seq_n, uint16_t len, uint8_t killed){
 	n = new_other_node(uuid);
       }
     }
-    adj_vert *adv = (adj_vert *)malloc(sizeof(adj_vert));
+    adj_vert *adv = malloc(sizeof(adj_vert));
     adv->name = n->name;
     adv->metric = metric;
     v->adjacencies[i] = adv;
@@ -1478,7 +1620,7 @@ int handle_CCP_packet(char *buf, struct sockaddr_in clientaddr, int portno, int 
       else{
 	//printf("CCP file: %s \n", data);
 	//create new active flow
-	active_flow *new = (active_flow *)malloc(sizeof(active_flow));
+	active_flow *new = malloc(sizeof(active_flow));
 	new->partneraddr = clientaddr;
 	new->destport = dest;
 	new->sourceport = portno;
@@ -1669,7 +1811,7 @@ vertex *find_vertex(char *name){
 
 adj_vert ***generate_graph(char **names){
   int total = num_neighbors + num_other_nodes + 1;
-  adj_vert ***graph = (adj_vert ***)malloc(total*sizeof(adj_vert **));
+  adj_vert ***graph = malloc(total*sizeof(adj_vert **));
   for(int i =0; i <total; i++){
     graph[i] = malloc(total*sizeof(adj_vert *));
   }   
@@ -1834,9 +1976,10 @@ int peer_rank(int connfd, char*uri, char* version)
   int total = num_neighbors + num_other_nodes +1;
   while (i < id_index)
     {
-      good_nodes[i] = (adj_vert *)malloc(sizeof(adj_vert));
+      good_nodes[i] = malloc(sizeof(adj_vert));
+      good_nodes[i]->name = malloc(100);;
       cur_name = name_array[i];
-      good_nodes[i]->name = cur_name;
+      strcpy(good_nodes[i]->name, cur_name);
       for(int k =0; k < total; k++){
         if(strcmp(cur_name, names[k]) == 0){
           good_nodes[i]->metric = dist[k];
@@ -1860,6 +2003,8 @@ int peer_rank(int connfd, char*uri, char* version)
       sprintf(buf, "%s{\"%s\":%d}]", buf, good_nodes[i]->name, good_nodes[i]->metric);
     else
       sprintf(buf, "%s{\"%s\":%d},", buf, good_nodes[i]->name, good_nodes[i]->metric);
+    free(good_nodes[i]->name);
+    free(good_nodes[i]);
   }
 
   char buf2[BUFSIZE];
@@ -1923,14 +2068,15 @@ int main(int argc, char **argv) {
   HTTP_portno = 0;
   CCP_portno = 0;
 
-  int search_ttl, search_interval;
+  int search_ttl=0, search_interval=0;
   char key[100], val[100];
-  node_name = (char *)malloc(100);
-  content_dir = (char *)malloc(100);
+  node_name = malloc(100);
+  content_dir = malloc(100);
   while(fgets(buf, BUFSIZE, config_fd) != NULL){
     
     sscanf(buf, "%s = %[^\n]", key, val);
     if(strcmp(key, "uuid") == 0){
+      printf("my_uuid = %s\n", val);
       uuid_parse(val, uuid);
     }else if(strcmp(key, "name") == 0){
       strcpy(node_name, val);
@@ -1939,7 +2085,7 @@ int main(int argc, char **argv) {
     }else if(strcmp(key, "backend_port") == 0){
       CCP_portno = atoi(val);
     }else if(strcmp(key, "content_dir") == 0){
-      content_dir = val;
+      strcpy(content_dir, val);
     }else if(strcmp(key, "search_ttl") == 0){
       search_ttl = atoi(val);
     }else if(strcmp(key, "search_interval") == 0){
@@ -1949,7 +2095,7 @@ int main(int argc, char **argv) {
       char P_name[100], P_uuid[100], P_hostname[100], P_frontend[100], P_backend[100], P_metric[100]; 
       for(i = 0; i<peer_count; i++){
 	fgets(buf, BUFSIZE, config_fd);
-	neighbors[i] = (node *)malloc(sizeof(struct node));
+	neighbors[i] = malloc(sizeof(struct node));
 	
 	sscanf(buf, "%s = %[^\n]", key, val);
 	sscanf(val, "%[^,],%[^,],%[^,],%[^,],%[^,]",P_uuid, P_hostname,P_frontend,P_backend,P_metric);
@@ -1957,8 +2103,8 @@ int main(int argc, char **argv) {
 	
 	sprintf(P_name, "node_%d", num_nodes);
 	
-	neighbors[i]->name = (char *)malloc(strlen(P_name));
-	neighbors[i]->host = (char *)malloc(strlen(P_hostname));
+	neighbors[i]->name = malloc(strlen(P_name));
+	neighbors[i]->host = malloc(strlen(P_hostname));
 	strcpy(neighbors[i]->name, P_name);
 	strcpy(neighbors[i]->host, P_hostname);
 	
@@ -1977,14 +2123,16 @@ int main(int argc, char **argv) {
   }
 
 
-  if(uuid_is_null(uuid))
+  if(uuid_is_null(uuid)){
+    printf("I AM GENERATING A UUID");
     uuid_generate(uuid);
+  }
   if(HTTP_portno == 0)
     HTTP_portno = 18345;
   if(CCP_portno == 0)
     CCP_portno = 18346;
   if(strcmp(content_dir,"")==0)
-    content_dir = "content/";
+    strcpy(content_dir, "content/");
   if(search_ttl == 0)
     search_ttl = 15;
   if(search_interval == 0)
@@ -1992,23 +2140,26 @@ int main(int argc, char **argv) {
 
   
 
-  my_node = (node *)malloc(sizeof(struct node));
+  my_node = malloc(sizeof(struct node));
   uuid_copy(my_node->uuid, uuid);
+  
   my_node->name = node_name;
   my_node->content_dir = content_dir;
+  printf("my_node->content_dir = %s\n", my_node->content_dir);
   my_node->front_port = HTTP_portno;
   my_node->back_port = CCP_portno;
   my_node->seq_n = 1;
   my_node->search_ttl = search_ttl;
+  printf("my_node->search_ttl = %d\n", my_node->search_ttl);
   my_node->search_interval = search_interval;
 
 
-  map[0] = (vertex *)malloc(sizeof(struct vertex));
+  map[0] = malloc(sizeof(struct vertex));
   map[0]->name = my_node->name;
   uuid_copy(map[0]->uuid, my_node->uuid);
 
   for(i=0; i < num_neighbors; i++){
-    map[0]->adjacencies[i] = (adj_vert *)malloc(sizeof(struct adjacent_vertex));
+    map[0]->adjacencies[i] = malloc(sizeof(struct adjacent_vertex));
     map[0]->adjacencies[i]->name = neighbors[i]->name;
     map[0]->adjacencies[i]->metric = neighbors[i]->metric;
   }
@@ -2081,6 +2232,8 @@ int main(int argc, char **argv) {
   time_t my_time = time(NULL);
   int first = 0;
   while (1) {
+    
+
     time_t cur_time = time(NULL);
     
     if (cur_time - my_time >10){
@@ -2107,7 +2260,8 @@ int main(int argc, char **argv) {
     time_t cur_search_time = time(NULL);
     for (i=0; i<num_searches; i++)
       {
-	if (cur_search_time - active_searches[i]->time > my_node->search_interval) {
+	if ( (cur_search_time - active_searches[i]->time)*1000 > my_node->search_interval) {
+	  printf("HERE\n");
 	  if(active_searches[i]->ttl == 0){
 	    if(active_searches[i]->client != 0)
 	      send_search_JSON(active_searches[i]);
@@ -2174,7 +2328,14 @@ int main(int argc, char **argv) {
 	  //printf("\nserver received backend packet from %s (%s)\n", hostp->h_name, hostaddrp);
 
 	  handle_CCP_packet(CCP_buf, clientaddr, CCP_portno, CCP_sockfd);
-	
+	  
+	  if(d_index>0){
+	    char uuid_c[36];
+	    bzero(uuid_c, 36);
+	    uuid_unparse(dictionary[d_index-1]->uuid, uuid_c);
+	    printf("dictionary[%d]->file: %s, ->uuid: %s\n",d_index-1, dictionary[d_index-1]->file, uuid_c);
+	  }
+	  
 	}else{ // act_fd is a client (i.e. GET request)
 
 	  bzero(buf, BUFSIZE);
